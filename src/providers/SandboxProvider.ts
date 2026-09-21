@@ -37,12 +37,12 @@ class ActionItem extends vscode.TreeItem {
 export class TensorlakeSandboxItem extends vscode.TreeItem {
   constructor(public readonly sandbox: TensorlakeSandbox) {
     super(
-      sandbox.name ?? sandbox.id,
+      sandbox.name ?? sandbox.sandbox_id,
       vscode.TreeItemCollapsibleState.None,
     );
     const status = sandbox.status.toLowerCase();
     this.description = sandbox.name
-      ? `${sandbox.status} · ${sandbox.id}`
+      ? `${sandbox.status} · ${sandbox.sandbox_id}`
       : sandbox.status;
     this.iconPath = new vscode.ThemeIcon(
       status === "running" ? "vm-running" : "vm-outline",
@@ -57,8 +57,8 @@ export class TensorlakeSandboxItem extends vscode.TreeItem {
       this.contextValue = "tensorlakeSandboxBusy";
     }
     this.tooltip = sandbox.name
-      ? `Tensorlake sandbox: ${sandbox.name} (${sandbox.id})`
-      : `Tensorlake sandbox: ${sandbox.id}`;
+      ? `Tensorlake sandbox: ${sandbox.name} (${sandbox.sandbox_id})`
+      : `Tensorlake sandbox: ${sandbox.sandbox_id}`;
   }
 }
 

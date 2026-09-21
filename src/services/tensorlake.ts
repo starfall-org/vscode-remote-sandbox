@@ -12,7 +12,7 @@ const SSH_AGENT_TIMEOUT_MS = 5_000;
 const SSH_READY_TIMEOUT_MS = 30_000;
 
 export interface TensorlakeSandbox {
-  id: string;
+  sandbox_id: string;
   name?: string | null;
   namespace?: string;
   status: string;
@@ -453,7 +453,7 @@ export async function deleteTensorlakeSandbox(
 }
 
 function tensorlakeHostAlias(sandbox: TensorlakeSandbox): string {
-  return sandbox.name ? `TL_${sandbox.name}` : `TL_${sandbox.id}`;
+  return sandbox.name ? `TL_${sandbox.name}` : `TL_${sandbox.sandbox_id}`;
 }
 
 function extractPublicKeys(text: string): string[] {
@@ -596,7 +596,7 @@ async function discoverLocalSshKeys(
       const identityFile = publicPath.slice(0, -4);
       const usableIdentity = fs.existsSync(identityFile)
         ? identityFile
-        : undefined;
+        : publicPath;
       for (const publicKey of extractPublicKeys(text)) {
         addKey(publicKey, usableIdentity);
       }
@@ -682,7 +682,7 @@ async function syncTensorlakeSshKeys(
         .replace(/[^A-Za-z0-9]/g, "")
         .slice(0, 16);
       try {
-        await tensorlakeRequest<TensorlakeSshKey>(
+        const created = await tensorlakeRequest<TensorlakeSshKey>(
           TENSORLAKE_SSH_KEYS_PATH,
           apiKey,
           "POST",
@@ -691,31 +691,42 @@ async function syncTensorlakeSshKeys(
             publicKey: localKey.publicKey,
           },
         );
+        registered.add(created.fingerprint || localKey.fingerprint);
         registered.add(localKey.fingerprint);
         added += 1;
+        outputChannel.appendLine(
+          `[Tensorlake] Registered SSH key ${localKey.fingerprint}.`,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes("(409)")) {
+          // A 409 from Tensorlake means the key is already registered.
           registered.add(localKey.fingerprint);
+          outputChannel.appendLine(
+            `[Tensorlake] SSH key already registered: ${localKey.fingerprint}.`,
+          );
           continue;
         }
         outputChannel.appendLine(
-          `[Tensorlake] Could not register SSH key ${localKey.fingerprint}: ${message}`,
+          `[Tensorlake] Rejected SSH key ${localKey.fingerprint}: ${message}`,
         );
       }
     }
 
-    outputChannel.appendLine(
-      `[Tensorlake] SSH key sync complete: ${added} added, ${localKeys.length - added} already registered or skipped.`,
+    const confirmed = localKeys.filter((key) =>
+      registered.has(key.fingerprint),
     );
+    outputChannel.appendLine(
+      `[Tensorlake] SSH key sync complete: ${added} added, ${confirmed.length - added} already registered, ${localKeys.length - confirmed.length} rejected.`,
+    );
+    return confirmed;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.appendLine(
       `[Tensorlake] SSH key sync failed: ${message}`,
     );
+    return [];
   }
-
-  return localKeys;
 }
 
 async function waitForTensorlakeSshReady(
@@ -747,6 +758,33 @@ async function waitForTensorlakeSshReady(
   );
 }
 
+function tensorlakeIdentityFiles(localKeys: LocalSshKey[]): string[] {
+  const sshDir = path.join(os.homedir(), ".ssh");
+  const cacheDir = path.join(sshDir, "remote-sandbox-tensorlake");
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+
+  const identityFiles: string[] = [];
+  for (const key of localKeys) {
+    if (key.identityFile && fs.existsSync(key.identityFile)) {
+      identityFiles.push(key.identityFile);
+      continue;
+    }
+
+    // OpenSSH can use a public-key file to select the matching private key
+    // from ssh-agent when IdentitiesOnly is enabled.
+    const safeFingerprint = key.fingerprint
+      .replace(/^SHA256:/, "")
+      .replace(/[^A-Za-z0-9_-]/g, "_");
+    const publicKeyPath = path.join(cacheDir, `${safeFingerprint}.pub`);
+    fs.writeFileSync(publicKeyPath, `${key.publicKey.trim()}\n`, {
+      mode: 0o600,
+    });
+    identityFiles.push(publicKeyPath);
+  }
+
+  return [...new Set(identityFiles)];
+}
+
 function buildTensorlakeSshBlock(
   sandbox: TensorlakeSandbox,
   localKeys: LocalSshKey[],
@@ -756,27 +794,22 @@ function buildTensorlakeSshBlock(
   }
 
   const hostname = new URL(sandbox.sandbox_url).hostname;
-  const identityFiles = [
-    ...new Set(
-      localKeys
-        .map((key) => key.identityFile)
-        .filter((value): value is string => Boolean(value)),
-    ),
-  ];
+  const identityFiles = tensorlakeIdentityFiles(localKeys);
 
   const lines = [
     `Host ${tensorlakeHostAlias(sandbox)}`,
     `    HostName ${hostname}`,
-    `    User ${sandbox.id}`,
+    `    User ${sandbox.sandbox_id}`,
   ];
 
   for (const identityFile of identityFiles) {
     lines.push(`    IdentityFile "${identityFile}"`);
   }
 
-  // Agent keys are also synchronized, so allow OpenSSH to offer them.
+  // Only offer keys that Tensorlake confirmed as registered. This avoids
+  // exhausting MaxAuthTries when the user's ssh-agent contains many keys.
   lines.push(
-    "    IdentitiesOnly no",
+    "    IdentitiesOnly yes",
     "    ServerAliveInterval 30",
     "    ServerAliveCountMax 3",
     "",
@@ -831,7 +864,7 @@ export async function connectTensorlakeSandbox(
 
   try {
     let current = await tensorlakeRequest<TensorlakeSandbox>(
-      `/sandboxes/${encodeURIComponent(sandbox.id)}`,
+      `/sandboxes/${encodeURIComponent(sandbox.sandbox_id)}`,
       apiKey,
     );
     const status = current.status.toLowerCase();
@@ -843,22 +876,22 @@ export async function connectTensorlakeSandbox(
         );
       }
       outputChannel.appendLine(
-        `[Tensorlake] Resuming sandbox: ${current.id}`,
+        `[Tensorlake] Resuming sandbox: ${current.sandbox_id}`,
       );
       await tensorlakeRequest<void>(
-        `/sandboxes/${encodeURIComponent(current.id)}/resume`,
+        `/sandboxes/${encodeURIComponent(current.sandbox_id)}/resume`,
         apiKey,
         "POST",
       );
-      current = await waitForTensorlakeSshReady(current.id, apiKey);
+      current = await waitForTensorlakeSshReady(current.sandbox_id, apiKey);
     } else if (status !== "running" || !current.sandbox_url) {
-      current = await waitForTensorlakeSshReady(current.id, apiKey);
+      current = await waitForTensorlakeSshReady(current.sandbox_id, apiKey);
     }
 
     const localKeys = await syncTensorlakeSshKeys(apiKey, outputChannel);
     if (localKeys.length === 0) {
-      vscode.window.showWarningMessage(
-        "No local SSH keys were found. Tensorlake Remote-SSH may fail until an SSH key is available locally.",
+      throw new Error(
+        "Tensorlake did not accept any local SSH key. Check the Remote Sandbox output channel for the rejected fingerprint and API error.",
       );
     }
 

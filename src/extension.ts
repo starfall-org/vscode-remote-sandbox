@@ -68,7 +68,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!(item instanceof TensorlakeSandboxItem)) {
           return;
         }
-        await suspendTensorlakeSandbox(item.sandbox.id, outputChannel);
+        await suspendTensorlakeSandbox(item.sandbox.sandbox_id, outputChannel);
         provider.refresh();
       },
     ),
@@ -78,7 +78,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!(item instanceof TensorlakeSandboxItem)) {
           return;
         }
-        await resumeTensorlakeSandbox(item.sandbox.id, outputChannel);
+        await resumeTensorlakeSandbox(item.sandbox.sandbox_id, outputChannel);
         provider.refresh();
       },
     ),
@@ -88,7 +88,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!(item instanceof TensorlakeSandboxItem)) {
           return;
         }
-        await deleteTensorlakeSandbox(item.sandbox.id, outputChannel);
+        await deleteTensorlakeSandbox(item.sandbox.sandbox_id, outputChannel);
         provider.refresh();
       },
     ),
@@ -102,9 +102,9 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         const pick = await vscode.window.showQuickPick(
           sandboxes.map((sandbox) => ({
-            label: sandbox.name ?? sandbox.id,
+            label: sandbox.name ?? sandbox.sandbox_id,
             description: sandbox.status,
-            detail: sandbox.name ? sandbox.id : undefined,
+            detail: sandbox.name ? sandbox.sandbox_id : undefined,
             sandbox,
           })),
           {
