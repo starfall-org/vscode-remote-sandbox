@@ -55,7 +55,7 @@ All commands are also available from the Command Palette.
 
 Each provider manages its own SSH config file under `~/.ssh` and only writes it when needed:
 
-- **Tensorlake** (`~/.ssh/tensorlake.conf`) — uses the sandbox-specific hostname returned by Tensorlake. Local public keys found under `~/.ssh` and in `ssh-agent` are automatically registered before connecting; matching private-key files are added as `IdentityFile` entries.
+- **Tensorlake** (`~/.ssh/tensorlake.conf`) — uses the sandbox-specific hostname returned by Tensorlake and the same default identity path as the Tensorlake CLI: `~/.ssh/id_ed25519_tensorlake`. Remote Sandbox only writes the SSH config; it does not create or register SSH keys.
 - **E2B** (`~/.ssh/e2b.conf`) — the entry is fully deterministic, so it is rewritten only when the file is missing or does not match.
 
 The config is (re)written automatically as part of **Connect in Current Window**, **Connect in New Window**, **Resume** and **Start** actions — whenever a check shows the stored config is outdated. The standalone "Get SSH Info" / "Save SSH Config" commands were removed.
@@ -74,7 +74,7 @@ Open Settings and search for `Remote Sandbox`.
 }
 ```
 
-- `remoteSandbox.tensorlakeApiKey`: Your Tensorlake API key. You can also set it with the **Tensorlake: Set API Key** command or the `TENSORLAKE_API_KEY` environment variable. When the key is saved or a Tensorlake connection is opened, Remote Sandbox syncs locally available SSH public keys to your Tensorlake account.
+- `remoteSandbox.tensorlakeApiKey`: Your Tensorlake project API key for sandbox lifecycle operations. You can also set it with the **Tensorlake: Set API Key** command or `TENSORLAKE_API_KEY`.
 - `remoteSandbox.e2bApiKey`: Your E2B API key. You can also set it with the **E2B: Set API Key** command or the `E2B_API_KEY` environment variable.
 - `remoteSandbox.freestyleApiKey`: Your Freestyle API key. You can also set it with the **Freestyle: Set API Key** command or the `FREESTYLE_API_KEY` environment variable.
 

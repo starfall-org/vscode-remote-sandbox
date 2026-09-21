@@ -53,7 +53,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "remote-sandbox.tensorlakeSetApiKey",
-      () => setTensorlakeApiKey(outputChannel),
+      () => setTensorlakeApiKey(),
     ),
     vscode.commands.registerCommand(
       "remote-sandbox.tensorlakeCreateSandbox",
