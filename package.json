@@ -1,7 +1,7 @@
 {
   "name": "remote-sandbox",
   "displayName": "Remote Sandbox",
-  "description": "Manage E2B and Freestyle sandboxes and connect to them over SSH from VS Code.",
+  "description": "Manage Tensorlake, E2B and Freestyle sandboxes and connect to them over SSH from VS Code.",
   "version": "2.4.2",
   "repository": {
     "type": "git",
@@ -46,6 +46,34 @@
         "command": "remote-sandbox.refreshSandboxes",
         "title": "Refresh Sandboxes",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "remote-sandbox.tensorlakeSetApiKey",
+        "title": "Tensorlake: Set API Key"
+      },
+      {
+        "command": "remote-sandbox.tensorlakeCreateSandbox",
+        "title": "Tensorlake: Create Sandbox",
+        "icon": "$(add)"
+      },
+      {
+        "command": "remote-sandbox.tensorlakeSuspendSandbox",
+        "title": "Tensorlake: Suspend Sandbox",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "remote-sandbox.tensorlakeResumeSandbox",
+        "title": "Tensorlake: Resume Sandbox",
+        "icon": "$(debug-start)"
+      },
+      {
+        "command": "remote-sandbox.tensorlakeDeleteSandbox",
+        "title": "Tensorlake: Terminate Sandbox",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "remote-sandbox.tensorlakeListSandboxes",
+        "title": "Tensorlake: List Sandboxes"
       },
       {
         "command": "remote-sandbox.e2bPauseSandbox",
@@ -129,6 +157,36 @@
       ],
       "view/item/context": [
         {
+          "command": "remote-sandbox.tensorlakeCreateSandbox",
+          "when": "viewItem == tensorlakeSection && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@0"
+        },
+        {
+          "command": "remote-sandbox.tensorlakeSuspendSandbox",
+          "when": "viewItem == tensorlakeSandboxRunning && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@0"
+        },
+        {
+          "command": "remote-sandbox.tensorlakeResumeSandbox",
+          "when": "viewItem == tensorlakeSandboxSuspended && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@0"
+        },
+        {
+          "command": "remote-sandbox.connectInCurrentWindow",
+          "when": "viewItem =~ /tensorlakeSandbox(Running.*|Suspended)/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@1"
+        },
+        {
+          "command": "remote-sandbox.connectInNewWindow",
+          "when": "viewItem =~ /tensorlakeSandbox(Running.*|Suspended)/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@2"
+        },
+        {
+          "command": "remote-sandbox.tensorlakeDeleteSandbox",
+          "when": "viewItem =~ /tensorlakeSandbox/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "3_delete@1"
+        },
+        {
           "command": "remote-sandbox.e2bCreateSandbox",
           "when": "viewItem == e2bSection && view == remote-sandbox-sandboxes-sidebar",
           "group": "inline@0"
@@ -209,6 +267,12 @@
           "default": "",
           "markdownDescription": "Your [Freestyle](https://freestyle.sh) API key. The extension uses this to authenticate with the Freestyle API. Set it here, run the **Freestyle: Set API Key** command, or use the `FREESTYLE_API_KEY` environment variable.",
           "editPresentation": "password"
+        },
+        "remoteSandbox.tensorlakeApiKey": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "password",
+          "markdownDescription": "Your [Tensorlake](https://tensorlake.ai) API key. The extension uses it for sandbox lifecycle operations. Set it here, run **Tensorlake: Set API Key**, or use the `TENSORLAKE_API_KEY` environment variable."
         }
       }
     }

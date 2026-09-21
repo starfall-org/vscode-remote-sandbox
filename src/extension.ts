@@ -9,7 +9,17 @@ import {
   deleteE2bSandbox,
 } from "./services/e2b";
 import {
+  connectTensorlakeSandbox,
+  listTensorlakeSandboxes,
+  setTensorlakeApiKey,
+  createTensorlakeSandbox,
+  suspendTensorlakeSandbox,
+  resumeTensorlakeSandbox,
+  deleteTensorlakeSandbox,
+} from "./services/tensorlake";
+import {
   SandboxProvider,
+  TensorlakeSandboxItem,
   E2BSandboxItem,
   FreestyleSandboxItem,
   SandboxTreeItem,
@@ -38,6 +48,83 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   );
   outputChannel.appendLine("View registered: remote-sandbox-sandboxes-sidebar");
+
+  // Tensorlake service
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "remote-sandbox.tensorlakeSetApiKey",
+      () => setTensorlakeApiKey(outputChannel),
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.tensorlakeCreateSandbox",
+      async () => {
+        await createTensorlakeSandbox(outputChannel);
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.tensorlakeSuspendSandbox",
+      async (item: TensorlakeSandboxItem) => {
+        if (!(item instanceof TensorlakeSandboxItem)) {
+          return;
+        }
+        await suspendTensorlakeSandbox(item.sandbox.id, outputChannel);
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.tensorlakeResumeSandbox",
+      async (item: TensorlakeSandboxItem) => {
+        if (!(item instanceof TensorlakeSandboxItem)) {
+          return;
+        }
+        await resumeTensorlakeSandbox(item.sandbox.id, outputChannel);
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.tensorlakeDeleteSandbox",
+      async (item: TensorlakeSandboxItem) => {
+        if (!(item instanceof TensorlakeSandboxItem)) {
+          return;
+        }
+        await deleteTensorlakeSandbox(item.sandbox.id, outputChannel);
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.tensorlakeListSandboxes",
+      async () => {
+        const sandboxes = await listTensorlakeSandboxes(outputChannel);
+        if (sandboxes.length === 0) {
+          vscode.window.showInformationMessage("No Tensorlake sandboxes found.");
+          return;
+        }
+        const pick = await vscode.window.showQuickPick(
+          sandboxes.map((sandbox) => ({
+            label: sandbox.name ?? sandbox.id,
+            description: sandbox.status,
+            detail: sandbox.name ? sandbox.id : undefined,
+            sandbox,
+          })),
+          {
+            placeHolder: "Select a Tensorlake sandbox to connect to",
+            matchOnDescription: true,
+          },
+        );
+        if (!pick) {
+          return;
+        }
+        const hostAlias = await connectTensorlakeSandbox(
+          pick.sandbox,
+          outputChannel,
+        );
+        if (hostAlias) {
+          openRemoteWindow(hostAlias, false, outputChannel);
+        }
+      },
+    ),
+  );
 
   // E2B API key command
   context.subscriptions.push(
@@ -232,7 +319,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     let hostAlias: string | undefined;
-    if (item instanceof E2BSandboxItem) {
+    if (item instanceof TensorlakeSandboxItem) {
+      hostAlias = await connectTensorlakeSandbox(item.sandbox, outputChannel);
+    } else if (item instanceof E2BSandboxItem) {
       hostAlias = await connectE2bSandbox(item.sandboxID, outputChannel);
     } else if (item instanceof FreestyleSandboxItem) {
       hostAlias = await connectFreestyleVm(item.vm, outputChannel);

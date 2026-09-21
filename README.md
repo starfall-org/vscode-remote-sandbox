@@ -1,8 +1,8 @@
 # Remote Sandbox
 
-Remote Sandbox manages sandboxed environments — **E2B** and **Freestyle** — and helps you connect to them over SSH from VS Code.
+Remote Sandbox manages sandboxed environments — **Tensorlake**, **E2B**, and **Freestyle** — and helps you connect to them over SSH from VS Code.
 
-The extension provides a **Sandboxes** view in the Activity Bar (like Remote Extended) that lists your E2B sandboxes and Freestyle VMs. Connecting to a sandbox **starts/resumes it, writes the matching `~/.ssh/*.conf` file if needed, and opens Remote-SSH** — no manual "get SSH info" step required.
+The extension provides a **Sandboxes** view in the Activity Bar (like Remote Extended) that lists Tensorlake sandboxes first, followed by Freestyle VMs and E2B sandboxes. Connecting to a sandbox **starts/resumes it, writes the matching `~/.ssh/*.conf` file if needed, and opens Remote-SSH** — no manual "get SSH info" step required.
 
 ## Requirements
 
@@ -35,11 +35,13 @@ Install the generated VSIX from the Extensions view.
 
 Open the **Remote Sandbox** view in the Activity Bar. The tree shows one section per provider:
 
-- **E2B Sandboxes** — list of your E2B sandboxes. Connecting writes the SSH config (if needed) and opens Remote-SSH.
+- **Tensorlake Sandboxes** — shown first. Supports create, suspend/resume for named sandboxes, terminate, and Remote-SSH connect. Before connecting, the extension discovers local SSH keys from `~/.ssh` and `ssh-agent`, registers any missing public keys with Tensorlake, and writes the SSH config.
 - **Freestyle VMs** — list of your VMs with actions to create, suspend, resume, start, or connect. Connecting writes the SSH config (if needed) and opens Remote-SSH.
+- **E2B Sandboxes** — list of your E2B sandboxes. Connecting writes the SSH config (if needed) and opens Remote-SSH.
 
 Each item has a context menu to **Connect in Current Window** or **Connect in New Window**. Next to the connect buttons, each sandbox/VM shows a lifecycle toggle:
 
+- **Tensorlake**: **Suspend** for named running sandboxes, **Resume** when suspended.
 - **E2B**: **Pause** when running, **Resume** when paused.
 - **Freestyle**: **Suspend** when running, **Resume** when suspended.
 
@@ -53,6 +55,7 @@ All commands are also available from the Command Palette.
 
 Each provider manages its own SSH config file under `~/.ssh` and only writes it when needed:
 
+- **Tensorlake** (`~/.ssh/tensorlake.conf`) — uses the sandbox-specific hostname returned by Tensorlake. Local public keys found under `~/.ssh` and in `ssh-agent` are automatically registered before connecting; matching private-key files are added as `IdentityFile` entries.
 - **E2B** (`~/.ssh/e2b.conf`) — the entry is fully deterministic, so it is rewritten only when the file is missing or does not match.
 
 The config is (re)written automatically as part of **Connect in Current Window**, **Connect in New Window**, **Resume** and **Start** actions — whenever a check shows the stored config is outdated. The standalone "Get SSH Info" / "Save SSH Config" commands were removed.
@@ -65,11 +68,13 @@ Open Settings and search for `Remote Sandbox`.
 
 ```json
 {
+  "remoteSandbox.tensorlakeApiKey": "",
   "remoteSandbox.e2bApiKey": "",
   "remoteSandbox.freestyleApiKey": ""
 }
 ```
 
+- `remoteSandbox.tensorlakeApiKey`: Your Tensorlake API key. You can also set it with the **Tensorlake: Set API Key** command or the `TENSORLAKE_API_KEY` environment variable. When the key is saved or a Tensorlake connection is opened, Remote Sandbox syncs locally available SSH public keys to your Tensorlake account.
 - `remoteSandbox.e2bApiKey`: Your E2B API key. You can also set it with the **E2B: Set API Key** command or the `E2B_API_KEY` environment variable.
 - `remoteSandbox.freestyleApiKey`: Your Freestyle API key. You can also set it with the **Freestyle: Set API Key** command or the `FREESTYLE_API_KEY` environment variable.
 

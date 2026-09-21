@@ -2,6 +2,11 @@ import * as vscode from "vscode";
 import type { SandboxProviderId } from "../models/types";
 import { hasE2bApiKey, listE2bSandboxes } from "../services/e2b";
 import { hasFreestyleApiKey, listFreestyleVms, type FreestyleVM } from "../services/freestyle";
+import {
+  hasTensorlakeApiKey,
+  listTensorlakeSandboxes,
+  type TensorlakeSandbox,
+} from "../services/tensorlake";
 
 export type SandboxTreeItem = vscode.TreeItem;
 
@@ -26,6 +31,34 @@ class ActionItem extends vscode.TreeItem {
     if (commandId) {
       this.command = { command: commandId, title: label, arguments: args };
     }
+  }
+}
+
+export class TensorlakeSandboxItem extends vscode.TreeItem {
+  constructor(public readonly sandbox: TensorlakeSandbox) {
+    super(
+      sandbox.name ?? sandbox.id,
+      vscode.TreeItemCollapsibleState.None,
+    );
+    const status = sandbox.status.toLowerCase();
+    this.description = sandbox.name
+      ? `${sandbox.status} · ${sandbox.id}`
+      : sandbox.status;
+    this.iconPath = new vscode.ThemeIcon(
+      status === "running" ? "vm-running" : "vm-outline",
+    );
+    if (status === "running") {
+      this.contextValue = sandbox.name
+        ? "tensorlakeSandboxRunning"
+        : "tensorlakeSandboxRunningEphemeral";
+    } else if (status === "suspended") {
+      this.contextValue = "tensorlakeSandboxSuspended";
+    } else {
+      this.contextValue = "tensorlakeSandboxBusy";
+    }
+    this.tooltip = sandbox.name
+      ? `Tensorlake sandbox: ${sandbox.name} (${sandbox.id})`
+      : `Tensorlake sandbox: ${sandbox.id}`;
   }
 }
 
@@ -106,6 +139,12 @@ export class SandboxProvider implements vscode.TreeDataProvider<SandboxTreeItem>
     if (!element) {
       return [
         new SandboxSectionItem(
+          "Tensorlake Sandboxes",
+          "tensorlake",
+          vscode.TreeItemCollapsibleState.Expanded,
+          "cloud",
+        ),
+        new SandboxSectionItem(
           "Freestyle VMs",
           "freestyle",
           vscode.TreeItemCollapsibleState.Expanded,
@@ -122,6 +161,8 @@ export class SandboxProvider implements vscode.TreeDataProvider<SandboxTreeItem>
 
     if (element instanceof SandboxSectionItem) {
       switch (element.provider) {
+        case "tensorlake":
+          return this.getTensorlakeChildren();
         case "e2b":
           return this.getE2bChildren();
         case "freestyle":
@@ -130,6 +171,29 @@ export class SandboxProvider implements vscode.TreeDataProvider<SandboxTreeItem>
     }
 
     return [];
+  }
+
+  private async getTensorlakeChildren(): Promise<SandboxTreeItem[]> {
+    const items: SandboxTreeItem[] = [];
+    if (!hasTensorlakeApiKey()) {
+      items.push(
+        new ActionItem(
+          "Set Tensorlake API key...",
+          "remote-sandbox.tensorlakeSetApiKey",
+          "key",
+        ),
+      );
+      return items;
+    }
+    const sandboxes = await listTensorlakeSandboxes(this.outputChannel);
+    if (sandboxes.length === 0) {
+      items.push(
+        new ActionItem("No Tensorlake sandboxes found", undefined, "info"),
+      );
+    } else {
+      items.push(...sandboxes.map((s) => new TensorlakeSandboxItem(s)));
+    }
+    return items;
   }
 
   private async getE2bChildren(): Promise<SandboxTreeItem[]> {
