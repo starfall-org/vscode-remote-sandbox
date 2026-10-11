@@ -171,11 +171,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         inspected?.workspaceValue,
       )} resolved=${String(config.get<string>(key))}`,
     );
-    if (inspected?.workspaceValue !== "Tensorlake") {
-      outputChannel.info(`Setting ${key}=Tensorlake at workspace scope`);
+    if (inspected?.workspaceValue !== "remote-sandbox.tensorlakeTerminal") {
+      outputChannel.info(`Setting ${key}=remote-sandbox.tensorlakeTerminal at workspace scope`);
       await config.update(
         key,
-        "Tensorlake",
+        "remote-sandbox.tensorlakeTerminal",
         vscode.ConfigurationTarget.Workspace,
       );
     }
@@ -184,9 +184,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       .getConfiguration("terminal.integrated")
       .get<string>(key);
     outputChannel.info(`Terminal default resolved to ${String(resolved)}`);
-    if (resolved !== "Tensorlake") {
-      throw new Error(
-        `VS Code did not accept Tensorlake as the workspace default terminal profile (${key}).`,
+    if (resolved !== "remote-sandbox.tensorlakeTerminal") {
+      outputChannel.error(
+        `VS Code did not accept remote-sandbox.tensorlakeTerminal as the workspace default terminal profile (${key}).`,
       );
     }
   };

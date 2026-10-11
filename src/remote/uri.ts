@@ -39,6 +39,10 @@ export function parseTensorlakeUri(uri: vscode.Uri): {
     throw vscode.FileSystemError.Unavailable("Invalid Tensorlake URI.");
   }
 
+  if (!uri.authority.trim()) {
+    throw vscode.FileSystemError.Unavailable("Tensorlake sandbox ID is required.");
+  }
+
   // Backward compatibility for named workspaces opened by <= 0.0.15.
   const legacyQuery = new URLSearchParams(uri.query);
   const legacySandboxId = legacyQuery.get("sandboxId")?.trim();

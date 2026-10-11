@@ -1,5 +1,9 @@
 import WebSocket, { RawData } from "ws";
 import {
+  TensorlakeError,
+  TensorlakeErrorKind,
+} from "./errors";
+import {
   tensorlakeProxyBase,
   tensorlakeProxyJson,
   tensorlakeProxyRequest,
@@ -157,22 +161,31 @@ export async function createTensorlakePty(
   sandboxId: string,
   options: TensorlakePtyOptions = {},
 ): Promise<TensorlakePtySession> {
-  const created = await tensorlakeProxyJson<CreatePtyResponse>(
-    sandboxId,
-    "/api/v1/pty",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        command: options.command ?? "/bin/bash",
-        args: options.args ?? ["-l"],
-        env: { TERM: "xterm-256color", ...options.env },
-        working_dir: options.workingDir ?? "/home/tl-user/workspace",
-        rows: options.rows ?? 24,
-        cols: options.cols ?? 80,
-      }),
-    },
-  );
+  let created: CreatePtyResponse;
+  try {
+    created = await tensorlakeProxyJson<CreatePtyResponse>(
+      sandboxId,
+      "/api/v1/pty",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          command: options.command ?? "/bin/bash",
+          args: options.args ?? ["-l"],
+          env: { TERM: "xterm-256color", ...options.env },
+          working_dir: options.workingDir ?? "/home/tl-user/workspace",
+          rows: options.rows ?? 24,
+          cols: options.cols ?? 80,
+        }),
+      },
+    );
+  } catch (error) {
+    throw new TensorlakeError(
+      `Failed to create Tensorlake PTY: ${error instanceof Error ? error.message : String(error)}`,
+      TensorlakeErrorKind.Network,
+      { cause: error },
+    );
+  }
 
   const wsUrl = new URL(
     `/api/v1/pty/${encodeURIComponent(created.session_id)}/ws`,

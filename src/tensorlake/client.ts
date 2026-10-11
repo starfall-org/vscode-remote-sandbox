@@ -54,7 +54,16 @@ export async function tensorlakeProxyRequest(
   requestPath: string,
   init: RequestInit = {},
 ): Promise<Response> {
-  const apiKey = requireTensorlakeApiKey();
+  let apiKey: string;
+  try {
+    apiKey = requireTensorlakeApiKey();
+  } catch (error) {
+    throw new TensorlakeError(
+      "Tensorlake API key is not configured. Please set it in settings or run 'Tensorlake: Set API Key'.",
+      TensorlakeErrorKind.Permission,
+      { cause: error },
+    );
+  }
 
   let response: Response;
   try {

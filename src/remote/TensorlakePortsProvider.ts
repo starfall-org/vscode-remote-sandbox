@@ -50,7 +50,7 @@ export class TensorlakePortsProvider
         ].join("\n"),
       );
       treeItem.command = {
-        command: "remote-tensorlake.openPort",
+        command: "remote-sandbox.openPort",
         title: "Open Port",
         arguments: [item],
       };

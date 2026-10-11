@@ -17,9 +17,6 @@
   ],
   "activationEvents": [
     "onFileSystem:tensorlake",
-    "onView:remote-sandbox-sandboxes-sidebar",
-    "onView:remote-sandbox-ports",
-    "onTerminalProfile:remote-sandbox.tensorlakeTerminal",
     "onStartupFinished"
   ],
   "extensionKind": [

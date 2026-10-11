@@ -99,23 +99,34 @@ export async function statTensorlakePath(
     return { type: "directory", size: 0, mtime: 0 };
   }
 
-  const parent = path.posix.dirname(normalized);
-  const basename = path.posix.basename(normalized);
-  const entries = await listTensorlakeDirectory(sandboxId, parent);
-  const entry = entries.find((candidate) => candidate.name === basename);
-  if (!entry) {
+  try {
+    const parent = path.posix.dirname(normalized);
+    const basename = path.posix.basename(normalized);
+    const entries = await listTensorlakeDirectory(sandboxId, parent);
+    const entry = entries.find((candidate) => candidate.name === basename);
+    if (!entry) {
+      throw new TensorlakeError(
+        `Remote path not found: ${normalized}`,
+        TensorlakeErrorKind.NotFound,
+        { status: 404 },
+      );
+    }
+
+    return {
+      type: entry.isDirectory ? "directory" : "file",
+      size: entry.size ?? 0,
+      mtime: entry.modifiedAt ?? 0,
+    };
+  } catch (error) {
+    if (error instanceof TensorlakeError) {
+      throw error;
+    }
     throw new TensorlakeError(
-      `Remote path not found: ${normalized}`,
-      TensorlakeErrorKind.NotFound,
-      { status: 404 },
+      `Failed to stat path ${normalized}: ${error instanceof Error ? error.message : String(error)}`,
+      TensorlakeErrorKind.Network,
+      { cause: error },
     );
   }
-
-  return {
-    type: entry.isDirectory ? "directory" : "file",
-    size: entry.size ?? 0,
-    mtime: entry.modifiedAt ?? 0,
-  };
 }
 
 export async function readTensorlakeFile(

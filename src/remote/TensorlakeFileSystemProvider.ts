@@ -208,7 +208,14 @@ export class TensorlakeFileSystemProvider
 
   private async resolve(uri: vscode.Uri): Promise<TensorlakeTarget> {
     const target = parseTensorlakeUri(uri);
-    await this.ensureSandbox(target.sandboxId);
+    try {
+      await this.ensureSandbox(target.sandboxId);
+    } catch (error) {
+      this.logFailure("resolve", uri, error);
+      throw vscode.FileSystemError.Unavailable(
+        `Tensorlake sandbox ${target.sandboxId} is not available.`,
+      );
+    }
     return target;
   }
 
