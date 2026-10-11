@@ -191,7 +191,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
   };
 
-  await refreshConnectionContext();
+  await refreshConnectionContext().catch((error) => {
+    outputChannel.error(
+      `Initial connection context refresh failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  });
 
   const terminalProfileRegistration =
     vscode.window.registerTerminalProfileProvider(
@@ -288,6 +294,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const portsView = vscode.window.createTreeView("remote-sandbox-ports", {
     treeDataProvider: portsProvider,
   });
+
+  // Register global refresh command
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "remote-sandbox.refreshSandboxes",
+      () => provider.refresh(),
+    ),
+  );
 
   registerE2bCommands(context, provider, outputChannel);
   registerFreestyleCommands(context, provider, outputChannel);
