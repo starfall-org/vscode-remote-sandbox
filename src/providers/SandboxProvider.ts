@@ -8,7 +8,9 @@ import {
   type TensorlakeSandbox,
 } from "../services/tensorlake";
 import {
-  listAllInstaServices,
+  listInstaBranches,
+  listInstaProjectsWithOrgs,
+  listInstaServices,
   type InstaBranch,
   type InstaProject,
   type InstaService,
@@ -144,6 +146,32 @@ export class TensorlakeRecentFolderItem extends vscode.TreeItem {
   }
 }
 
+export class InstaCloudProjectItem extends vscode.TreeItem {
+  constructor(
+    public readonly project: InstaProject,
+    public readonly orgName: string | undefined,
+  ) {
+    super(project.name, vscode.TreeItemCollapsibleState.Collapsed);
+    this.description = orgName ?? project.status;
+    this.iconPath = new vscode.ThemeIcon("project");
+    this.contextValue = "instacloudProject";
+    this.tooltip = `InstaCloud project: ${project.name} (${project.id})`;
+  }
+}
+
+export class InstaCloudBranchItem extends vscode.TreeItem {
+  constructor(
+    public readonly branch: InstaBranch,
+    public readonly project: InstaProject,
+  ) {
+    super(branch.name, vscode.TreeItemCollapsibleState.Collapsed);
+    this.description = branch.is_default ? "default" : branch.status;
+    this.iconPath = new vscode.ThemeIcon("git-branch");
+    this.contextValue = "instacloudBranch";
+    this.tooltip = `InstaCloud branch: ${branch.name} (${branch.id})`;
+  }
+}
+
 export class InstaCloudServiceItem extends vscode.TreeItem {
   constructor(
     public readonly service: InstaService,
@@ -152,15 +180,7 @@ export class InstaCloudServiceItem extends vscode.TreeItem {
   ) {
     super(service.name, vscode.TreeItemCollapsibleState.None);
     const desired = service.desired_state;
-    // Services are listed flat, so the project and branch they belong to
-    // are part of the row itself rather than tree levels to expand.
-    this.description = [
-      this.project.name,
-      this.branch?.name,
-      desired ?? service.status,
-    ]
-      .filter(Boolean)
-      .join(" · ");
+    this.description = desired ?? service.status;
     this.iconPath = new vscode.ThemeIcon(
       service.type === "compute"
         ? desired === "running"
@@ -168,20 +188,20 @@ export class InstaCloudServiceItem extends vscode.TreeItem {
           : "vm-outline"
         : "database",
     );
-    switch (desired) {
-      case "running":
-        this.contextValue = "instacloudServiceRunning";
-        break;
-      case "stopped":
-        this.contextValue = "instacloudServiceStopped";
-        break;
-      case "suspended":
-        this.contextValue = "instacloudServiceSuspended";
-        break;
-      default:
-        this.contextValue = "instacloudServiceBusy";
-        break;
-    }
+    // Only compute services expose an SSH endpoint, so the connect
+    // actions are offered for those alone. The context value carries the
+    // state so the menu can react to it, and the type so the connect
+    // entries only show up for compute services.
+    const state =
+      desired === "running"
+        ? "Running"
+        : desired === "stopped"
+          ? "Stopped"
+          : desired === "suspended"
+            ? "Suspended"
+            : "Busy";
+    const kind = service.type === "compute" ? "Compute" : "Data";
+    this.contextValue = `instacloud${kind}Service${state}`;
     const details = [
       service.type,
       service.region ?? undefined,
@@ -189,7 +209,7 @@ export class InstaCloudServiceItem extends vscode.TreeItem {
     ]
       .filter(Boolean)
       .join(" · ");
-    this.tooltip = `InstaCloud service: ${service.name} (${service.id})${details ? ` — ${details}` : ""}\n${this.project.name}${this.branch ? ` / ${this.branch.name}` : ""}`;
+    this.tooltip = `InstaCloud service: ${service.name} (${service.id})${details ? ` — ${details}` : ""}`;
   }
 }
 
@@ -271,6 +291,14 @@ export class SandboxProvider
       }
     }
 
+    if (element instanceof InstaCloudProjectItem) {
+      return this.getInstaCloudBranches(element);
+    }
+
+    if (element instanceof InstaCloudBranchItem) {
+      return this.getInstaCloudServices(element);
+    }
+
     if (element instanceof TensorlakeSandboxItem) {
       return this.getRecentFolders(element.sandbox.sandbox_id).map(
         (recent) => new TensorlakeRecentFolderItem(recent),
@@ -344,19 +372,56 @@ export class SandboxProvider
     // a clickable "Signed in as ..." row invites accidental clicks that
     // would sign the user out. Sign-in state is exposed through the
     // section's context menu instead.
-    const services = await listAllInstaServices(this.outputChannel);
-    if (services.length === 0) {
+    const projects = await listInstaProjectsWithOrgs(this.outputChannel);
+    if (projects.length === 0) {
       items.push(
-        new ActionItem("No InstaCloud services found", undefined, "info"),
+        new ActionItem("No InstaCloud projects found", undefined, "info"),
       );
       return items;
     }
     items.push(
-      ...services.map((entry) =>
-        new InstaCloudServiceItem(entry.service, entry.project, entry.branch),
+      ...projects.map(
+        (entry) => new InstaCloudProjectItem(entry.project, entry.orgName),
       ),
     );
     return items;
+  }
+
+  private async getInstaCloudBranches(
+    item: InstaCloudProjectItem,
+  ): Promise<SandboxTreeItem[]> {
+    const branches = await listInstaBranches(
+      item.project.id,
+      this.outputChannel,
+    );
+    if (branches.length === 0) {
+      return [new ActionItem("No branches found", undefined, "info")];
+    }
+    // The default branch first — it is what a user almost always wants.
+    const sorted = [...branches].sort((a, b) => {
+      if (a.is_default === b.is_default) {
+        return a.name.localeCompare(b.name);
+      }
+      return a.is_default ? -1 : 1;
+    });
+    return sorted.map((branch) => new InstaCloudBranchItem(branch, item.project));
+  }
+
+  private async getInstaCloudServices(
+    item: InstaCloudBranchItem,
+  ): Promise<SandboxTreeItem[]> {
+    const services = await listInstaServices(
+      item.project.id,
+      item.branch.name,
+      this.outputChannel,
+    );
+    if (services.length === 0) {
+      return [new ActionItem("No services found", undefined, "info")];
+    }
+    return services.map(
+      (service) =>
+        new InstaCloudServiceItem(service, item.project, item.branch),
+    );
   }
 
   async rememberRecentFolder(

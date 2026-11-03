@@ -3,6 +3,11 @@ import * as https from "https";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
+import {
+  ensureSshConfigInclude,
+  sshDirectory,
+  upsertSshConfigBlock,
+} from "./sshConfig";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                          */
@@ -751,7 +756,7 @@ async function ensureFreestyleSshConfig(
   context?: vscode.ExtensionContext,
 ): Promise<string | undefined> {
   const alias = freestyleHostAlias(vmId);
-  const sshDir = path.join(os.homedir(), ".ssh");
+  const sshDir = sshDirectory();
   const configPath = path.join(sshDir, "freestyle.conf");
 
   try {
@@ -777,8 +782,7 @@ async function ensureFreestyleSshConfig(
     // Step 4: write SSH config (token embedded in the User field)
     fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
 
-    const configContent = [
-      `# BEGIN FREESTYLE VM ${alias}`,
+    upsertSshConfigBlock(configPath, `FREESTYLE VM ${alias}`, [
       `Host ${alias}`,
       `    HostName ${FREESTYLE_SSH_HOST}`,
       `    User ${vmId}+root:${tokenResult.token}`,
@@ -786,17 +790,14 @@ async function ensureFreestyleSshConfig(
       `    UserKnownHostsFile /dev/null`,
       `    ServerAliveInterval 60`,
       `    ServerAliveCountMax 3`,
-      `# END FREESTYLE VM ${alias}`,
-      "",
-    ].join("\n");
+    ]);
 
-    fs.writeFileSync(configPath, configContent, { mode: 0o600 });
+    // Remote-SSH resolves the alias through ~/.ssh/config, so the
+    // Include directive has to be there for the connection to work.
+    ensureSshConfigInclude(configPath, outputChannel);
 
     outputChannel.appendLine(
       `[Freestyle] SSH config written to ${configPath} (Host: ${alias})`,
-    );
-    outputChannel.appendLine(
-      `[Freestyle] Ensure ~/.ssh/config contains: Include "${configPath}"`,
     );
     return alias;
   } catch (error) {

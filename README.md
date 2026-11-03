@@ -36,7 +36,7 @@ Install the generated VSIX from the Extensions view.
 Open the **Remote Sandbox** view in the Activity Bar. The tree shows one section per provider:
 
 - **Freestyle VMs** — list of your VMs with actions to create, pause, resume, start, run a command, or connect. Connecting writes the SSH config (if needed) and opens Remote-SSH.
-- **InstaCloud** — a flat list of the services in your InstaCloud account, each annotated with its project, branch and desired state. Sign in through the browser, then services can be started, stopped, suspended, restarted, connected to over SSH, and can run one-shot commands.
+- **InstaCloud** — a project → branch → service tree for your InstaCloud account. Sign in through the browser, then services can be started, stopped, suspended, restarted, connected to over SSH, and can run one-shot commands.
 - **Tensorlake Sandboxes** — manage Tensorlake sandboxes and connect to lightweight remote workspaces without VS Code Server. Each sandbox can show its recently opened remote folders.
 
 Each Freestyle item has a context menu to **Connect in Current Window** or **Connect in New Window**, plus **Freestyle: Run Command…** which prompts for a shell command and runs it inside the VM (`POST /v5/vms/{id}/exec-await`), printing stdout, stderr and the exit code to the output channel. Tensorlake offers its own connect actions, plus remote terminal, folder browsing, Git clone, and public-port management.
@@ -68,9 +68,11 @@ An API key still works for everything except SSH certificates: the certificate e
 
 ### Browsing and controlling services
 
-The **InstaCloud** section of the tree lists every service of every branch of every project directly, like the Freestyle VM list — there are no project or branch levels to expand. Each row shows the service name, its type and desired state, and its `project · branch` origin:
+The **InstaCloud** section of the tree mirrors the InstaCloud resource hierarchy:
 
-- **Service** — one node per service (compute, postgres, redis, mysql, mongodb, storage), annotated with `project · branch · state`.
+- **Project** — one node per project, annotated with its organization.
+- **Branch** — the branches of a project; the default branch is listed first.
+- **Service** — the services of a branch (compute, postgres, redis, mysql, mongodb, storage), annotated with the desired state.
 
 Right-click a service to control it:
 
@@ -81,20 +83,25 @@ Right-click a service to control it:
 | **InstaCloud: Suspend Service** | Sets the desired state to `suspended`. |
 | **InstaCloud: Restart Service** | Restarts the service. |
 | **InstaCloud: Run Command…** | Prompts for a shell command and runs it in the service. |
-| **InstaCloud: Connect** | Issues an SSH certificate and opens a Remote-SSH window (requires a signed-in session). |
+| **Connect in Current Window** | Issues an SSH certificate and opens a Remote-SSH window in the current window (requires a signed-in session). |
+| **Connect in New Window** | The same, in a new window. |
 | **InstaCloud: Copy SSH Target** | Copies the `ssh -p <port> <user>@<host>` target to the clipboard. |
+
+The two **Connect** entries are the same shared commands Freestyle uses, and they appear as inline buttons on compute services in the tree.
 
 The exec endpoint takes an argv array and invokes no shell, so the extension wraps your input in `sh -c`. Commands are limited to 180 seconds and the output is capped at 1 MiB.
 
 ### Connecting over SSH
 
-**InstaCloud: Connect** requests a short-lived SSH certificate for the service, which is only possible with an interactive session — API keys are refused. The extension then:
+**Connect in Current Window** / **Connect in New Window** request a short-lived SSH certificate for the service, which is only possible with an interactive session — API keys are refused. The extension then:
 
 1. makes sure an SSH key exists (`~/.ssh/instacloud_ed25519`, or your existing default key),
-2. writes the certificate to `~/.ssh/instacloud_<service>.cert`,
-3. adds the certificate authority to `~/.ssh/known_hosts`,
-4. writes `~/.ssh/instacloud.conf` with the `INSTA_<service-id>` host,
-5. opens Remote-SSH on that host.
+2. starts the service when it is not running,
+3. writes the certificate to `~/.ssh/instacloud_<service>.cert`,
+4. adds the certificate authority to `~/.ssh/known_hosts`,
+5. writes the `INSTA_<service-id>` host into `~/.ssh/instacloud.conf`,
+6. makes sure `~/.ssh/config` includes that file,
+7. opens Remote-SSH on that host.
 
 The certificate is short-lived (one hour by default) and the SSH proxy is regenerated on every connect, so re-connect after it expires.
 
@@ -105,11 +112,11 @@ Freestyle and InstaCloud manage their own SSH config files under `~/.ssh` and on
 - **Freestyle** (`~/.ssh/freestyle.conf`) — credentials are generated when connecting or starting a VM.
 - **InstaCloud** (`~/.ssh/instacloud.conf`) — the host, port and certificate of the service you connected to.
 
-The config is (re)written automatically as part of **Connect in Current Window**, **Connect in New Window**, and **Start** — whenever a check shows the stored config is outdated. The standalone "Get SSH Info" / "Save SSH Config" commands were removed.
+Both files are managed per host, so connecting to a second VM or service keeps the first one. The extension also adds the matching `Include` directive to `~/.ssh/config` for you, so Remote-SSH can resolve the host alias without any manual editing. The config is (re)written automatically as part of **Connect in Current Window**, **Connect in New Window**, and **Start** — whenever a check shows the stored config is outdated. The standalone "Get SSH Info" / "Save SSH Config" commands were removed.
 
 Tensorlake does not use SSH. It uses the `tensorlake:` virtual filesystem and an API-backed terminal/PTY instead.
 
-Freestyle and InstaCloud write their own `.conf` files and print the `Include` line to the output channel; make sure those lines are present in `~/.ssh/config`.
+Freestyle and InstaCloud write their own `.conf` files and add the `Include` line to `~/.ssh/config` themselves.
 
 ## Configuration
 

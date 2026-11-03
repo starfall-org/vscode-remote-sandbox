@@ -2,7 +2,7 @@
   "name": "remote-sandbox",
   "displayName": "Remote Sandbox",
   "description": "Manage Freestyle, InstaCloud, and Tensorlake sandboxes and connect to them from VS Code.",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "repository": {
     "type": "git",
     "url": "https://github.com/starfall-org/remote-sandbox-vscode.git"
@@ -227,10 +227,6 @@
         "title": "InstaCloud: Show Account"
       },
       {
-        "command": "remote-sandbox.instacloudConnectService",
-        "title": "InstaCloud: Connect"
-      },
-      {
         "command": "remote-sandbox.instacloudStartService",
         "title": "InstaCloud: Start Service",
         "icon": "$(debug-start)"
@@ -376,36 +372,6 @@
           "group": "1_actions@2"
         },
         {
-          "command": "remote-sandbox.instacloudStartService",
-          "when": "viewItem =~ /instacloudServiceStopped|instacloudServiceSuspended/ && view == remote-sandbox-sandboxes-sidebar",
-          "group": "inline@0"
-        },
-        {
-          "command": "remote-sandbox.instacloudStopService",
-          "when": "viewItem == instacloudServiceRunning && view == remote-sandbox-sandboxes-sidebar",
-          "group": "inline@1"
-        },
-        {
-          "command": "remote-sandbox.instacloudSuspendService",
-          "when": "viewItem == instacloudServiceRunning && view == remote-sandbox-sandboxes-sidebar",
-          "group": "inline@2"
-        },
-        {
-          "command": "remote-sandbox.instacloudRestartService",
-          "when": "viewItem == instacloudServiceRunning && view == remote-sandbox-sandboxes-sidebar",
-          "group": "1_actions@1"
-        },
-        {
-          "command": "remote-sandbox.instacloudExecService",
-          "when": "viewItem =~ /instacloudService/ && view == remote-sandbox-sandboxes-sidebar",
-          "group": "1_actions@2"
-        },
-        {
-          "command": "remote-sandbox.instacloudShowSshTarget",
-          "when": "viewItem =~ /instacloudService/ && view == remote-sandbox-sandboxes-sidebar",
-          "group": "1_actions@3"
-        },
-        {
           "command": "remote-sandbox.openPort",
           "when": "view == remote-sandbox-ports && viewItem == tensorlakePort",
           "group": "inline@1"
@@ -421,24 +387,44 @@
           "group": "inline@9"
         },
         {
-          "command": "remote-sandbox.instacloudSignIn",
-          "when": "viewItem == instacloudSection && view == remote-sandbox-sandboxes-sidebar",
-          "group": "0_auth@1"
+          "command": "remote-sandbox.instacloudStartService",
+          "when": "viewItem =~ /instacloud(Compute|Data)Service(Stopped|Suspended)/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@0"
         },
         {
-          "command": "remote-sandbox.instacloudSignOut",
-          "when": "viewItem == instacloudSectionSignedIn && view == remote-sandbox-sandboxes-sidebar",
-          "group": "0_auth@2"
+          "command": "remote-sandbox.instacloudStopService",
+          "when": "viewItem =~ /instacloud(Compute|Data)ServiceRunning/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@0"
         },
         {
-          "command": "remote-sandbox.instacloudShowAccount",
-          "when": "viewItem == instacloudSectionSignedIn && view == remote-sandbox-sandboxes-sidebar",
-          "group": "0_auth@3"
+          "command": "remote-sandbox.instacloudSuspendService",
+          "when": "viewItem =~ /instacloud(Compute|Data)ServiceRunning/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "1_actions@1"
         },
         {
-          "command": "remote-sandbox.instacloudConnectService",
-          "when": "viewItem =~ /instacloudService/ && view == remote-sandbox-sandboxes-sidebar",
-          "group": "1_actions@4"
+          "command": "remote-sandbox.connectInCurrentWindow",
+          "when": "viewItem =~ /instacloudComputeService/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@1"
+        },
+        {
+          "command": "remote-sandbox.connectInNewWindow",
+          "when": "viewItem =~ /instacloudComputeService/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "inline@2"
+        },
+        {
+          "command": "remote-sandbox.instacloudRestartService",
+          "when": "viewItem =~ /instacloud(Compute|Data)ServiceRunning/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "remote-sandbox.instacloudExecService",
+          "when": "viewItem =~ /instacloudComputeService/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "2_exec@1"
+        },
+        {
+          "command": "remote-sandbox.instacloudShowSshTarget",
+          "when": "viewItem =~ /instacloudComputeService/ && view == remote-sandbox-sandboxes-sidebar",
+          "group": "2_exec@2"
         }
       ],
       "explorer/context": [

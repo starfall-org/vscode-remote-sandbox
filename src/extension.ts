@@ -584,23 +584,6 @@ function registerInstaCloudCommands(
       },
     ),
     vscode.commands.registerCommand(
-      "remote-sandbox.instacloudConnectService",
-      async (item: InstaCloudServiceItem) => {
-        if (!(item instanceof InstaCloudServiceItem)) {
-          return;
-        }
-        const alias = await connectInstaService(
-          item.project.id,
-          item.service.id,
-          item.service.name,
-          outputChannel,
-        );
-        if (alias) {
-          openRemoteWindow(alias, false, outputChannel);
-        }
-      },
-    ),
-    vscode.commands.registerCommand(
       "remote-sandbox.instacloudStartService",
       async (item: InstaCloudServiceItem) => {
         if (!(item instanceof InstaCloudServiceItem)) {

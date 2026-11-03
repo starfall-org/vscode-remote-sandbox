@@ -4,6 +4,11 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { getInstaCredential, instaApiRequest } from "./instacloudAuth";
+import {
+  ensureSshConfigInclude,
+  sshDirectory,
+  upsertSshConfigBlock,
+} from "./sshConfig";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                              */
@@ -113,7 +118,7 @@ function trustCertificateAuthority(
   caPublicKey: string,
   outputChannel: vscode.OutputChannel,
 ): void {
-  const sshDir = path.join(os.homedir(), ".ssh");
+  const sshDir = sshDirectory();
   const knownHosts = path.join(sshDir, "known_hosts");
   const entry = caPublicKey.startsWith("@cert-authority")
     ? caPublicKey
@@ -144,6 +149,8 @@ function trustCertificateAuthority(
  *
  * The certificate endpoint refuses API keys: it is only reachable with an
  * interactive session, which is exactly what the sign-in flow provides.
+ * A service that is not running is started first, the same way a Freestyle
+ * VM is started before connecting.
  * Returns the SSH host alias on success.
  */
 export async function connectInstaService(
@@ -171,6 +178,33 @@ export async function connectInstaService(
 
   try {
     outputChannel.show(true);
+
+    // A stopped service has no SSH endpoint, so wake it up first.
+    const state = await instaApiRequest<{ desiredState?: string }>(
+      `/projects/${encodeURIComponent(projectId)}/services/${encodeURIComponent(serviceId)}/state`,
+      "GET",
+      undefined,
+      credential.token,
+    ).catch(() => undefined);
+    if (state && state.desiredState && state.desiredState !== "running") {
+      outputChannel.appendLine(
+        `[InstaCloud] Service ${serviceName} is ${state.desiredState} — starting...`,
+      );
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Starting InstaCloud service ${serviceName}...`,
+          cancellable: false,
+        },
+        () =>
+          instaApiRequest(
+            `/projects/${encodeURIComponent(projectId)}/services/${encodeURIComponent(serviceId)}/start`,
+            "POST",
+            {},
+            credential.token,
+          ),
+      );
+    }
 
     const keys = await ensureSshKeyPair(outputChannel);
     if (!keys) {
@@ -206,7 +240,7 @@ export async function connectInstaService(
       throw error;
     }
 
-    const sshDir = path.join(os.homedir(), ".ssh");
+    const sshDir = sshDirectory();
     fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
 
     const alias = instaHostAlias(serviceId);
@@ -218,8 +252,7 @@ export async function connectInstaService(
     }
 
     const configPath = path.join(sshDir, "instacloud.conf");
-    const configContent = [
-      `# BEGIN INSTACLOUD SERVICE ${alias}`,
+    upsertSshConfigBlock(configPath, `INSTACLOUD SERVICE ${alias}`, [
       `Host ${alias}`,
       `    HostName ${cert.host}`,
       `    User ${cert.username}`,
@@ -232,17 +265,14 @@ export async function connectInstaService(
       `    UserKnownHostsFile ${path.join(sshDir, "known_hosts")}`,
       `    ServerAliveInterval 60`,
       `    ServerAliveCountMax 3`,
-      `# END INSTACLOUD SERVICE ${alias}`,
-      "",
-    ].join("\n");
+    ]);
 
-    fs.writeFileSync(configPath, configContent, { mode: 0o600 });
+    // Remote-SSH resolves the alias through ~/.ssh/config, so the
+    // Include directive has to be there for the connection to work.
+    ensureSshConfigInclude(configPath, outputChannel);
 
     outputChannel.appendLine(
       `[InstaCloud] SSH config written to ${configPath} (Host: ${alias})`,
-    );
-    outputChannel.appendLine(
-      `[InstaCloud] Ensure ~/.ssh/config contains: Include "${configPath}"`,
     );
     outputChannel.appendLine(
       `[InstaCloud] Certificate expires at ${cert.expiresAt}.`,
