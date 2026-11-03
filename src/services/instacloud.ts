@@ -122,19 +122,16 @@ async function instaRequest<T>(
   return instaApiRequest<T>(requestPath, method, body, credential.token);
 }
 
-/** Asks the user to sign in, offering the API key as a fallback. */
+/** Asks the user to sign in. */
 function promptSignIn(): void {
   void vscode.window
     .showWarningMessage(
       "Not signed in to InstaCloud. Sign in to browse projects and services.",
       "Sign In",
-      "Use API Key",
     )
     .then((selection) => {
       if (selection === "Sign In") {
         vscode.commands.executeCommand("remote-sandbox.instacloudSignIn");
-      } else if (selection === "Use API Key") {
-        vscode.commands.executeCommand("remote-sandbox.instacloudSetApiKey");
       }
     });
 }
@@ -529,4 +526,54 @@ export async function listInstaProjectsWithOrgs(
     logError(outputChannel, "listing projects", error);
     return [];
   }
+}
+
+/**
+ * Lists every service of every branch of every project, flattened into a
+ * single list.
+ *
+ * The tree shows services directly (like the Freestyle VM list), so the
+ * project and branch each service belongs to travel with it instead of
+ * being intermediate tree levels.
+ */
+export async function listAllInstaServices(
+  outputChannel?: vscode.OutputChannel,
+): Promise<
+  { service: InstaService; project: InstaProject; branch: InstaBranch }[]
+> {
+  const projects = await listInstaProjectsWithOrgs(outputChannel);
+  // The whole account is listed in one go, so the per-branch requests
+  // run in parallel to keep the section responsive.
+  const branchesPerProject = await Promise.all(
+    projects.map(({ project }) =>
+      listInstaBranches(project.id, outputChannel).then((branches) => ({
+        project,
+        branches,
+      })),
+    ),
+  );
+
+  const results = await Promise.all(
+    branchesPerProject.map(async ({ project, branches }) => {
+      const servicesPerBranch = await Promise.all(
+        branches.map(async (branch) => ({
+          branch,
+          services: await listInstaServices(
+            project.id,
+            branch.name,
+            outputChannel,
+          ),
+        })),
+      );
+      return servicesPerBranch.flatMap(({ branch, services }) =>
+        services.map((service) => ({ service, project, branch })),
+      );
+    }),
+  );
+
+  const result = results.flat();
+  outputChannel?.appendLine(
+    `[InstaCloud] Listed ${result.length} service(s) in total.`,
+  );
+  return result;
 }

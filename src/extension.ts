@@ -518,6 +518,29 @@ function registerInstaCloudCommands(
     vscode.commands.registerCommand(
       "remote-sandbox.instacloudSignIn",
       async () => {
+        // One entry point, like the other providers: the user picks how
+        // to authenticate and the tree keeps a single row for it.
+        const choice = await vscode.window.showQuickPick(
+          [
+            {
+              label: "$(sign-in) Sign in with browser",
+              description: "OAuth device flow — no API key needed",
+            },
+            {
+              label: "$(key) Use an API key",
+              description: "Headless fallback for machine-only setups",
+            },
+          ],
+          { placeHolder: "Sign in to InstaCloud" },
+        );
+        if (!choice) {
+          return;
+        }
+        if (choice.label.includes("API key")) {
+          await setInstaApiKey();
+          provider.refresh();
+          return;
+        }
         const signedIn = await signInInstaCloud(outputChannel);
         if (signedIn) {
           provider.refresh();
@@ -527,6 +550,16 @@ function registerInstaCloudCommands(
     vscode.commands.registerCommand(
       "remote-sandbox.instacloudSignOut",
       async () => {
+        // Signing out discards the stored session, so ask first. A
+        // mis-click should never end the session.
+        const confirm = await vscode.window.showWarningMessage(
+          "Sign out of InstaCloud? The stored session will be removed from this machine.",
+          { modal: true },
+          "Sign Out",
+        );
+        if (confirm !== "Sign Out") {
+          return;
+        }
         await signOutInstaCloud();
         outputChannel.appendLine("[InstaCloud] Signed out.");
         vscode.window.showInformationMessage("Signed out of InstaCloud.");

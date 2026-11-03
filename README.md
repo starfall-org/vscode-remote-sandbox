@@ -36,7 +36,7 @@ Install the generated VSIX from the Extensions view.
 Open the **Remote Sandbox** view in the Activity Bar. The tree shows one section per provider:
 
 - **Freestyle VMs** — list of your VMs with actions to create, pause, resume, start, run a command, or connect. Connecting writes the SSH config (if needed) and opens Remote-SSH.
-- **InstaCloud** — a project → branch → service tree for your InstaCloud account. Sign in through the browser, then services can be started, stopped, suspended, restarted, connected to over SSH, and can run one-shot commands.
+- **InstaCloud** — a flat list of the services in your InstaCloud account, each annotated with its project, branch and desired state. Sign in through the browser, then services can be started, stopped, suspended, restarted, connected to over SSH, and can run one-shot commands.
 - **Tensorlake Sandboxes** — manage Tensorlake sandboxes and connect to lightweight remote workspaces without VS Code Server. Each sandbox can show its recently opened remote folders.
 
 Each Freestyle item has a context menu to **Connect in Current Window** or **Connect in New Window**, plus **Freestyle: Run Command…** which prompts for a shell command and runs it inside the VM (`POST /v5/vms/{id}/exec-await`), printing stdout, stderr and the exit code to the output channel. Tensorlake offers its own connect actions, plus remote terminal, folder browsing, Git clone, and public-port management.
@@ -57,20 +57,20 @@ Run **InstaCloud: Sign In**. The extension starts an OAuth device flow: it shows
 
 | Command | Description |
 | --- | --- |
-| **InstaCloud: Sign In** | Signs in through the browser (device flow). |
-| **InstaCloud: Sign Out** | Forgets the stored session. |
+| **InstaCloud: Sign In** | Offers browser sign-in (device flow) or an API key. |
+| **InstaCloud: Sign Out** | Forgets the stored session (asks for confirmation first). |
 | **InstaCloud: Show Account** | Shows the signed-in user. |
 | **InstaCloud: Set API Key** | Fallback for headless setups that cannot sign in. |
+
+While signed in, the **InstaCloud** section header shows the account email as plain text. There is deliberately no clickable "Signed in as …" row — signing out lives in the section's right-click menu only, and it always asks for confirmation, so a stray click can never end the session.
 
 An API key still works for everything except SSH certificates: the certificate endpoint refuses machine credentials. When an interactive session is available the extension uses it in preference to the key.
 
 ### Browsing and controlling services
 
-The **InstaCloud** section of the tree mirrors the InstaCloud resource hierarchy:
+The **InstaCloud** section of the tree lists every service of every branch of every project directly, like the Freestyle VM list — there are no project or branch levels to expand. Each row shows the service name, its type and desired state, and its `project · branch` origin:
 
-- **Project** — one node per project, annotated with its organization.
-- **Branch** — the branches of a project; the default branch is listed first.
-- **Service** — the services of a branch (compute, postgres, redis, mysql, mongodb, storage), annotated with the desired state.
+- **Service** — one node per service (compute, postgres, redis, mysql, mongodb, storage), annotated with `project · branch · state`.
 
 Right-click a service to control it:
 

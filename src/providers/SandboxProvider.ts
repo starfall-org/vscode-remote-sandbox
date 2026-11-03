@@ -8,9 +8,7 @@ import {
   type TensorlakeSandbox,
 } from "../services/tensorlake";
 import {
-  listInstaBranches,
-  listInstaProjectsWithOrgs,
-  listInstaServices,
+  listAllInstaServices,
   type InstaBranch,
   type InstaProject,
   type InstaService,
@@ -146,32 +144,6 @@ export class TensorlakeRecentFolderItem extends vscode.TreeItem {
   }
 }
 
-export class InstaCloudProjectItem extends vscode.TreeItem {
-  constructor(
-    public readonly project: InstaProject,
-    public readonly orgName: string | undefined,
-  ) {
-    super(project.name, vscode.TreeItemCollapsibleState.Collapsed);
-    this.description = orgName ?? project.status;
-    this.iconPath = new vscode.ThemeIcon("project");
-    this.contextValue = "instacloudProject";
-    this.tooltip = `InstaCloud project: ${project.name} (${project.id})`;
-  }
-}
-
-export class InstaCloudBranchItem extends vscode.TreeItem {
-  constructor(
-    public readonly branch: InstaBranch,
-    public readonly project: InstaProject,
-  ) {
-    super(branch.name, vscode.TreeItemCollapsibleState.Collapsed);
-    this.description = branch.is_default ? "default" : branch.status;
-    this.iconPath = new vscode.ThemeIcon("git-branch");
-    this.contextValue = "instacloudBranch";
-    this.tooltip = `InstaCloud branch: ${branch.name} (${branch.id})`;
-  }
-}
-
 export class InstaCloudServiceItem extends vscode.TreeItem {
   constructor(
     public readonly service: InstaService,
@@ -180,7 +152,15 @@ export class InstaCloudServiceItem extends vscode.TreeItem {
   ) {
     super(service.name, vscode.TreeItemCollapsibleState.None);
     const desired = service.desired_state;
-    this.description = desired ?? service.status;
+    // Services are listed flat, so the project and branch they belong to
+    // are part of the row itself rather than tree levels to expand.
+    this.description = [
+      this.project.name,
+      this.branch?.name,
+      desired ?? service.status,
+    ]
+      .filter(Boolean)
+      .join(" · ");
     this.iconPath = new vscode.ThemeIcon(
       service.type === "compute"
         ? desired === "running"
@@ -209,7 +189,7 @@ export class InstaCloudServiceItem extends vscode.TreeItem {
     ]
       .filter(Boolean)
       .join(" · ");
-    this.tooltip = `InstaCloud service: ${service.name} (${service.id})${details ? ` — ${details}` : ""}`;
+    this.tooltip = `InstaCloud service: ${service.name} (${service.id})${details ? ` — ${details}` : ""}\n${this.project.name}${this.branch ? ` / ${this.branch.name}` : ""}`;
   }
 }
 
@@ -254,6 +234,13 @@ export class SandboxProvider
       // account: signing in and signing out are not both useful at once.
       if (credential?.kind === "session") {
         instaSection.contextValue = "instacloudSectionSignedIn";
+        // Show who is signed in as non-interactive text on the section
+        // header, so there is no clickable row that can log you out.
+        const email = credential.account?.email;
+        if (email) {
+          instaSection.description = email;
+          instaSection.tooltip = `Signed in to InstaCloud as ${email}`;
+        }
       }
 
       return [
@@ -282,14 +269,6 @@ export class SandboxProvider
         case "instacloud":
           return this.getInstaCloudChildren();
       }
-    }
-
-    if (element instanceof InstaCloudProjectItem) {
-      return this.getInstaCloudBranches(element);
-    }
-
-    if (element instanceof InstaCloudBranchItem) {
-      return this.getInstaCloudServices(element);
     }
 
     if (element instanceof TensorlakeSandboxItem) {
@@ -349,84 +328,35 @@ export class SandboxProvider
     const items: SandboxTreeItem[] = [];
     const credential = await getInstaCredential();
     if (!credential) {
+      // A single entry point, mirroring the other providers: signing in
+      // with the browser and using an API key are both offered by the
+      // "Sign in to InstaCloud..." command.
       items.push(
         new ActionItem(
           "Sign in to InstaCloud...",
           "remote-sandbox.instacloudSignIn",
           "account",
         ),
-        new ActionItem(
-          "Set InstaCloud API key...",
-          "remote-sandbox.instacloudSetApiKey",
-          "key",
-        ),
       );
       return items;
     }
-    if (credential.kind === "session" && credential.account?.email) {
+    // The signed-in account is intentionally NOT shown as a tree item:
+    // a clickable "Signed in as ..." row invites accidental clicks that
+    // would sign the user out. Sign-in state is exposed through the
+    // section's context menu instead.
+    const services = await listAllInstaServices(this.outputChannel);
+    if (services.length === 0) {
       items.push(
-        new ActionItem(
-          `Signed in as ${credential.account.email}`,
-          "remote-sandbox.instacloudSignOut",
-          "account",
-        ),
-      );
-    }
-    const projects = await listInstaProjectsWithOrgs(this.outputChannel);
-    if (projects.length === 0) {
-      items.push(
-        new ActionItem("No InstaCloud projects found", undefined, "info"),
+        new ActionItem("No InstaCloud services found", undefined, "info"),
       );
       return items;
     }
     items.push(
-      ...projects.map(
-        (entry) =>
-          new InstaCloudProjectItem(entry.project, entry.orgName),
+      ...services.map((entry) =>
+        new InstaCloudServiceItem(entry.service, entry.project, entry.branch),
       ),
     );
     return items;
-  }
-
-  private async getInstaCloudBranches(
-    item: InstaCloudProjectItem,
-  ): Promise<SandboxTreeItem[]> {
-    const branches = await listInstaBranches(
-      item.project.id,
-      this.outputChannel,
-    );
-    if (branches.length === 0) {
-      return [
-        new ActionItem("No branches found", undefined, "info"),
-      ];
-    }
-    // The default branch first — it is what a user almost always wants.
-    const sorted = [...branches].sort((a, b) => {
-      if (a.is_default === b.is_default) {
-        return a.name.localeCompare(b.name);
-      }
-      return a.is_default ? -1 : 1;
-    });
-    return sorted.map((branch) => new InstaCloudBranchItem(branch, item.project));
-  }
-
-  private async getInstaCloudServices(
-    item: InstaCloudBranchItem,
-  ): Promise<SandboxTreeItem[]> {
-    const services = await listInstaServices(
-      item.project.id,
-      item.branch.name,
-      this.outputChannel,
-    );
-    if (services.length === 0) {
-      return [
-        new ActionItem("No services found", undefined, "info"),
-      ];
-    }
-    return services.map(
-      (service) =>
-        new InstaCloudServiceItem(service, item.project, item.branch),
-    );
   }
 
   async rememberRecentFolder(
