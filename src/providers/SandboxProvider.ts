@@ -1,13 +1,24 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SandboxProviderId } from "../models/types";
-import { hasE2bApiKey, listE2bSandboxes } from "../services/e2b";
 import { hasFreestyleApiKey, listFreestyleVms, type FreestyleVM } from "../services/freestyle";
 import {
   hasTensorlakeApiKey,
   listTensorlakeSandboxes,
   type TensorlakeSandbox,
 } from "../services/tensorlake";
+import {
+  listInstaBranches,
+  listInstaProjectsWithOrgs,
+  listInstaServices,
+  type InstaBranch,
+  type InstaProject,
+  type InstaService,
+} from "../services/instacloud";
+import {
+  getInstaCredential,
+  type InstaCredential,
+} from "../services/instacloudAuth";
 import { TENSORLAKE_HOME } from "../remote/uri";
 
 export type SandboxTreeItem = vscode.TreeItem;
@@ -46,25 +57,6 @@ class ActionItem extends vscode.TreeItem {
   }
 }
 
-export class E2BSandboxItem extends vscode.TreeItem {
-  constructor(
-    public readonly sandboxID: string,
-    public readonly state?: string,
-  ) {
-    super(sandboxID, vscode.TreeItemCollapsibleState.None);
-    this.description = state ?? "";
-    this.iconPath = new vscode.ThemeIcon(
-      state === "paused" ? "vm-outline" : "vm-running",
-    );
-    // State-aware contextValue so the UI can show "Pause" for running
-    // sandboxes and "Resume" for paused ones. All E2B sandboxes get a delete
-    // action.
-    this.contextValue =
-      state === "paused" ? "e2bSandboxPaused" : "e2bSandboxRunning";
-    this.tooltip = `E2B sandbox: ${sandboxID}`;
-  }
-}
-
 export class FreestyleSandboxItem extends vscode.TreeItem {
   constructor(public readonly vm: FreestyleVM) {
     super(vm.id, vscode.TreeItemCollapsibleState.None);
@@ -72,26 +64,27 @@ export class FreestyleSandboxItem extends vscode.TreeItem {
     this.iconPath = new vscode.ThemeIcon(
       vm.state === "running" ? "vm-running" : "vm-outline",
     );
-    // State-aware contextValue so the UI can show "Stop"/"Suspend" when
-    // running, "Resume" when suspended, and "Start" when stopped.
+    // State-aware contextValue so the UI can show "Pause" when running,
+    // "Resume" when paused and "Start" when stopped.
     switch (vm.state) {
       case "running":
         this.contextValue = "freestyleVmRunning";
         break;
-      case "suspended":
-        this.contextValue = "freestyleVmSuspended";
+      case "paused":
+        this.contextValue = "freestyleVmPaused";
         break;
       case "stopped":
         this.contextValue = "freestyleVmStopped";
         break;
-      case "lost":
-        this.contextValue = "freestyleVmLost";
-        break;
-      default: // starting, suspending, building
+      default: // starting, pausing
         this.contextValue = "freestyleVmBusy";
         break;
     }
-    this.tooltip = `Freestyle VM: ${vm.id}`;
+    const resources = vm.resources;
+    const details = resources
+      ? ` · ${resources.cpu} vCPU · ${resources.memory} MiB`
+      : "";
+    this.tooltip = `Freestyle VM: ${vm.id}${details}`;
   }
 }
 
@@ -153,9 +146,76 @@ export class TensorlakeRecentFolderItem extends vscode.TreeItem {
   }
 }
 
+export class InstaCloudProjectItem extends vscode.TreeItem {
+  constructor(
+    public readonly project: InstaProject,
+    public readonly orgName: string | undefined,
+  ) {
+    super(project.name, vscode.TreeItemCollapsibleState.Collapsed);
+    this.description = orgName ?? project.status;
+    this.iconPath = new vscode.ThemeIcon("project");
+    this.contextValue = "instacloudProject";
+    this.tooltip = `InstaCloud project: ${project.name} (${project.id})`;
+  }
+}
+
+export class InstaCloudBranchItem extends vscode.TreeItem {
+  constructor(
+    public readonly branch: InstaBranch,
+    public readonly project: InstaProject,
+  ) {
+    super(branch.name, vscode.TreeItemCollapsibleState.Collapsed);
+    this.description = branch.is_default ? "default" : branch.status;
+    this.iconPath = new vscode.ThemeIcon("git-branch");
+    this.contextValue = "instacloudBranch";
+    this.tooltip = `InstaCloud branch: ${branch.name} (${branch.id})`;
+  }
+}
+
+export class InstaCloudServiceItem extends vscode.TreeItem {
+  constructor(
+    public readonly service: InstaService,
+    public readonly project: InstaProject,
+    public readonly branch: InstaBranch | undefined,
+  ) {
+    super(service.name, vscode.TreeItemCollapsibleState.None);
+    const desired = service.desired_state;
+    this.description = desired ?? service.status;
+    this.iconPath = new vscode.ThemeIcon(
+      service.type === "compute"
+        ? desired === "running"
+          ? "vm-running"
+          : "vm-outline"
+        : "database",
+    );
+    switch (desired) {
+      case "running":
+        this.contextValue = "instacloudServiceRunning";
+        break;
+      case "stopped":
+        this.contextValue = "instacloudServiceStopped";
+        break;
+      case "suspended":
+        this.contextValue = "instacloudServiceSuspended";
+        break;
+      default:
+        this.contextValue = "instacloudServiceBusy";
+        break;
+    }
+    const details = [
+      service.type,
+      service.region ?? undefined,
+      service.machine_count ? `${service.machine_count} machine(s)` : undefined,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    this.tooltip = `InstaCloud service: ${service.name} (${service.id})${details ? ` — ${details}` : ""}`;
+  }
+}
+
 /**
  * Tree data provider for the "Sandboxes" view. The root shows one collapsible
- * section per provider (Freestyle, E2B, Tensorlake); each section lazily lists
+ * section per provider (Freestyle, Tensorlake); each section lazily lists
  * the user's sandboxes / VMs from the corresponding service. Tensorlake
  * sandboxes can expand to show recently used folders.
  */
@@ -183,6 +243,19 @@ export class SandboxProvider
 
   async getChildren(element?: SandboxTreeItem): Promise<SandboxTreeItem[]> {
     if (!element) {
+      const credential = await getInstaCredential();
+      const instaSection = new SandboxSectionItem(
+        "InstaCloud",
+        "instacloud",
+        vscode.TreeItemCollapsibleState.Expanded,
+        "rocket",
+      );
+      // The context menu differs between a signed-in and a signed-out
+      // account: signing in and signing out are not both useful at once.
+      if (credential?.kind === "session") {
+        instaSection.contextValue = "instacloudSectionSignedIn";
+      }
+
       return [
         new SandboxSectionItem(
           "Freestyle VMs",
@@ -191,29 +264,32 @@ export class SandboxProvider
           "vm",
         ),
         new SandboxSectionItem(
-          "E2B Sandboxes",
-          "e2b",
-          vscode.TreeItemCollapsibleState.Expanded,
-          "server-process",
-        ),
-        new SandboxSectionItem(
           "Tensorlake Sandboxes",
           "tensorlake",
           vscode.TreeItemCollapsibleState.Expanded,
           "cloud",
         ),
+        instaSection,
       ];
     }
 
     if (element instanceof SandboxSectionItem) {
       switch (element.provider) {
-        case "e2b":
-          return this.getE2bChildren();
         case "freestyle":
           return this.getFreestyleChildren();
         case "tensorlake":
           return this.getTensorlakeChildren();
+        case "instacloud":
+          return this.getInstaCloudChildren();
       }
+    }
+
+    if (element instanceof InstaCloudProjectItem) {
+      return this.getInstaCloudBranches(element);
+    }
+
+    if (element instanceof InstaCloudBranchItem) {
+      return this.getInstaCloudServices(element);
     }
 
     if (element instanceof TensorlakeSandboxItem) {
@@ -225,28 +301,13 @@ export class SandboxProvider
     return [];
   }
 
-  private async getE2bChildren(): Promise<SandboxTreeItem[]> {
-    const items: SandboxTreeItem[] = [];
-    if (!hasE2bApiKey()) {
-      items.push(new ActionItem("Set E2B API key...", "remote-sandbox.e2bSetApiKey", "key"));
-      return items;
-    }
-    const sandboxes = await listE2bSandboxes();
-    if (sandboxes.length === 0) {
-      items.push(new ActionItem("No E2B sandboxes found", undefined, "info"));
-    } else {
-      items.push(...sandboxes.map((s) => new E2BSandboxItem(s.sandboxID, s.state)));
-    }
-    return items;
-  }
-
   private async getFreestyleChildren(): Promise<SandboxTreeItem[]> {
     const items: SandboxTreeItem[] = [];
     if (!hasFreestyleApiKey()) {
       items.push(new ActionItem("Set Freestyle API key...", "remote-sandbox.freestyleSetApiKey", "key"));
       return items;
     }
-    const vms = await listFreestyleVms();
+    const vms = await listFreestyleVms(this.outputChannel);
     if (vms.length === 0) {
       items.push(new ActionItem("No Freestyle VMs found", undefined, "info"));
     } else {
@@ -282,6 +343,90 @@ export class SandboxProvider
       );
     }
     return items;
+  }
+
+  private async getInstaCloudChildren(): Promise<SandboxTreeItem[]> {
+    const items: SandboxTreeItem[] = [];
+    const credential = await getInstaCredential();
+    if (!credential) {
+      items.push(
+        new ActionItem(
+          "Sign in to InstaCloud...",
+          "remote-sandbox.instacloudSignIn",
+          "account",
+        ),
+        new ActionItem(
+          "Set InstaCloud API key...",
+          "remote-sandbox.instacloudSetApiKey",
+          "key",
+        ),
+      );
+      return items;
+    }
+    if (credential.kind === "session" && credential.account?.email) {
+      items.push(
+        new ActionItem(
+          `Signed in as ${credential.account.email}`,
+          "remote-sandbox.instacloudSignOut",
+          "account",
+        ),
+      );
+    }
+    const projects = await listInstaProjectsWithOrgs(this.outputChannel);
+    if (projects.length === 0) {
+      items.push(
+        new ActionItem("No InstaCloud projects found", undefined, "info"),
+      );
+      return items;
+    }
+    items.push(
+      ...projects.map(
+        (entry) =>
+          new InstaCloudProjectItem(entry.project, entry.orgName),
+      ),
+    );
+    return items;
+  }
+
+  private async getInstaCloudBranches(
+    item: InstaCloudProjectItem,
+  ): Promise<SandboxTreeItem[]> {
+    const branches = await listInstaBranches(
+      item.project.id,
+      this.outputChannel,
+    );
+    if (branches.length === 0) {
+      return [
+        new ActionItem("No branches found", undefined, "info"),
+      ];
+    }
+    // The default branch first — it is what a user almost always wants.
+    const sorted = [...branches].sort((a, b) => {
+      if (a.is_default === b.is_default) {
+        return a.name.localeCompare(b.name);
+      }
+      return a.is_default ? -1 : 1;
+    });
+    return sorted.map((branch) => new InstaCloudBranchItem(branch, item.project));
+  }
+
+  private async getInstaCloudServices(
+    item: InstaCloudBranchItem,
+  ): Promise<SandboxTreeItem[]> {
+    const services = await listInstaServices(
+      item.project.id,
+      item.branch.name,
+      this.outputChannel,
+    );
+    if (services.length === 0) {
+      return [
+        new ActionItem("No services found", undefined, "info"),
+      ];
+    }
+    return services.map(
+      (service) =>
+        new InstaCloudServiceItem(service, item.project, item.branch),
+    );
   }
 
   async rememberRecentFolder(

@@ -1,17 +1,8 @@
 import * as vscode from "vscode";
 import {
-  connectE2bSandbox,
-  listE2bSandboxes,
-  setE2bApiKey,
-  pauseE2bSandbox,
-  resumeE2bSandbox,
-  createE2bSandbox,
-  deleteE2bSandbox,
-} from "./services/e2b";
-import {
   SandboxProvider,
-  E2BSandboxItem,
   FreestyleSandboxItem,
+  InstaCloudServiceItem,
   TensorlakeRecentFolderItem,
   TensorlakeSandboxItem,
   SandboxTreeItem,
@@ -20,11 +11,29 @@ import {
   listFreestyleVms,
   setFreestyleApiKey,
   createFreestyleVm,
-  suspendFreestyleVm,
+  pauseFreestyleVm,
   startFreestyleVm,
   deleteFreestyleVm,
+  promptAndExecFreestyleVm,
   connectFreestyleVm,
 } from "./services/freestyle";
+import {
+  setInstaApiKey,
+  startInstaService,
+  stopInstaService,
+  suspendInstaService,
+  restartInstaService,
+  promptAndExecInstaService,
+  getInstaSshTarget,
+  formatInstaSshCommand,
+} from "./services/instacloud";
+import {
+  initInstaAuthStore,
+  signInInstaCloud,
+  signOutInstaCloud,
+  getInstaAccount,
+} from "./services/instacloudAuth";
+import { connectInstaService } from "./services/instacloudSsh";
 import {
   listTensorlakeSandboxes,
   setTensorlakeApiKey,
@@ -86,6 +95,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     log: true,
   });
   outputChannel.info("Remote Sandbox is now active!");
+  // The InstaCloud session token lives in secret storage, never in settings.
+  initInstaAuthStore(context.secrets);
   outputChannel.info(
     `Workspace folders: ${
       (vscode.workspace.workspaceFolders ?? [])
@@ -303,8 +314,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     ),
   );
 
-  registerE2bCommands(context, provider, outputChannel);
   registerFreestyleCommands(context, provider, outputChannel);
+  registerInstaCloudCommands(context, provider, outputChannel);
   registerTensorlakeCommands(
     context,
     provider,
@@ -312,6 +323,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     connectionStore,
     sessionManager,
     outputChannel,
+  );
+
+  // Shared connect commands — they work on any provider item that knows
+  // how to open a Remote-SSH window.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "remote-sandbox.connectInCurrentWindow",
+      (item: SandboxTreeItem) =>
+        connectToSandbox(item, false, outputChannel, context),
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.connectInNewWindow",
+      (item: SandboxTreeItem) =>
+        connectToSandbox(item, true, outputChannel, context),
+    ),
   );
 
   context.subscriptions.push(
@@ -325,90 +351,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     portsView,
     outputChannel,
     treeView,
-  );
-}
-
-function registerE2bCommands(
-  context: vscode.ExtensionContext,
-  provider: SandboxProvider,
-  outputChannel: vscode.OutputChannel,
-): void {
-  context.subscriptions.push(
-    vscode.commands.registerCommand("remote-sandbox.e2bSetApiKey", () =>
-      setE2bApiKey(context),
-    ),
-    vscode.commands.registerCommand(
-      "remote-sandbox.e2bPauseSandbox",
-      async (item: E2BSandboxItem) => {
-        if (!(item instanceof E2BSandboxItem)) {
-          return;
-        }
-        await pauseE2bSandbox(item.sandboxID, outputChannel);
-        provider.refresh();
-      },
-    ),
-    vscode.commands.registerCommand(
-      "remote-sandbox.e2bResumeSandbox",
-      async (item: E2BSandboxItem) => {
-        if (!(item instanceof E2BSandboxItem)) {
-          return;
-        }
-        await resumeE2bSandbox(item.sandboxID, outputChannel);
-        provider.refresh();
-      },
-    ),
-    vscode.commands.registerCommand(
-      "remote-sandbox.e2bCreateSandbox",
-      async () => {
-        await createE2bSandbox(outputChannel);
-        provider.refresh();
-      },
-    ),
-    vscode.commands.registerCommand(
-      "remote-sandbox.e2bDeleteSandbox",
-      async (item: E2BSandboxItem) => {
-        if (!(item instanceof E2BSandboxItem)) {
-          return;
-        }
-        await deleteE2bSandbox(item.sandboxID, outputChannel);
-        provider.refresh();
-      },
-    ),
-    vscode.commands.registerCommand(
-      "remote-sandbox.e2bListSandboxes",
-      async () => {
-        const sandboxes = await listE2bSandboxes(outputChannel);
-        if (sandboxes.length === 0) {
-          vscode.window.showInformationMessage("No E2B sandboxes found.");
-          return;
-        }
-        const pick = await vscode.window.showQuickPick(
-          sandboxes.map((s) => ({
-            label: s.sandboxID,
-            description: s.state ?? "unknown",
-          })),
-          {
-            placeHolder: "Select an E2B sandbox to connect to",
-            matchOnDescription: true,
-          },
-        );
-        if (!pick) {
-          return;
-        }
-        const hostAlias = await connectE2bSandbox(pick.label, outputChannel);
-        if (hostAlias) {
-          openRemoteWindow(hostAlias, false, outputChannel);
-        }
-      },
-    ),
-    vscode.commands.registerCommand(
-      "remote-sandbox.connectInCurrentWindow",
-      (item: SandboxTreeItem) => connectToSandbox(item, false, outputChannel),
-    ),
-    vscode.commands.registerCommand(
-      "remote-sandbox.connectInNewWindow",
-      (item: SandboxTreeItem) => connectToSandbox(item, true, outputChannel),
-    ),
   );
 }
 
@@ -429,12 +371,12 @@ function registerFreestyleCommands(
       },
     ),
     vscode.commands.registerCommand(
-      "remote-sandbox.freestyleSuspendVm",
+      "remote-sandbox.freestylePauseVm",
       async (item: FreestyleSandboxItem) => {
         if (!(item instanceof FreestyleSandboxItem)) {
           return;
         }
-        await suspendFreestyleVm(item.vm.id, outputChannel);
+        await pauseFreestyleVm(item.vm.id, outputChannel);
         provider.refresh();
       },
     ),
@@ -469,6 +411,39 @@ function registerFreestyleCommands(
       },
     ),
     vscode.commands.registerCommand(
+      "remote-sandbox.freestyleExecVm",
+      async (item: FreestyleSandboxItem) => {
+        if (!(item instanceof FreestyleSandboxItem)) {
+          return;
+        }
+        const result = await promptAndExecFreestyleVm(
+          item.vm.id,
+          item.vm.displayName ?? item.vm.id,
+          outputChannel,
+        );
+        if (!result) {
+          return;
+        }
+        outputChannel.appendLine(
+          `[Freestyle] exit=${
+            result.statusCode ?? "timeout"
+          } vm=${item.vm.id}`,
+        );
+        if (result.stdout) {
+          outputChannel.appendLine(result.stdout);
+        }
+        if (result.stderr) {
+          outputChannel.appendLine(result.stderr);
+        }
+        outputChannel.show(true);
+        vscode.window.showInformationMessage(
+          `Command finished with exit code ${
+            result.statusCode ?? "n/a (killed by timeout)"
+          }.`,
+        );
+      },
+    ),
+    vscode.commands.registerCommand(
       "remote-sandbox.freestyleListVms",
       async () => {
         const vms = await listFreestyleVms(outputChannel);
@@ -480,9 +455,11 @@ function registerFreestyleCommands(
           vms.map((v) => ({
             label: v.id,
             description: v.state,
-            detail: `${v.cpu ?? "?"} vCPU · ${v.memory ?? "?"} GiB RAM · ${
-              v.storage ?? "?"
-            } GiB disk`,
+            detail: `${
+              v.resources?.cpu ?? "?"
+            } vCPU · ${v.resources?.memory ?? "?"} MiB RAM · ${
+              v.resources?.storage ?? "?"
+            } MiB disk`,
             vm: v,
           })),
           {
@@ -506,21 +483,211 @@ async function connectToSandbox(
   item: SandboxTreeItem | undefined,
   newWindow: boolean,
   outputChannel: vscode.OutputChannel,
+  context: vscode.ExtensionContext,
 ): Promise<void> {
   if (!item) {
     return;
   }
 
   let hostAlias: string | undefined;
-  if (item instanceof E2BSandboxItem) {
-    hostAlias = await connectE2bSandbox(item.sandboxID, outputChannel);
-  } else if (item instanceof FreestyleSandboxItem) {
-    hostAlias = await connectFreestyleVm(item.vm, outputChannel);
+  if (item instanceof FreestyleSandboxItem) {
+    hostAlias = await connectFreestyleVm(item.vm, outputChannel, context);
+  } else if (item instanceof InstaCloudServiceItem) {
+    hostAlias = await connectInstaService(
+      item.project.id,
+      item.service.id,
+      item.service.name,
+      outputChannel,
+    );
   }
 
   if (hostAlias) {
     openRemoteWindow(hostAlias, newWindow, outputChannel);
   }
+}
+
+function registerInstaCloudCommands(
+  context: vscode.ExtensionContext,
+  provider: SandboxProvider,
+  outputChannel: vscode.OutputChannel,
+): void {
+  context.subscriptions.push(
+    vscode.commands.registerCommand("remote-sandbox.instacloudSetApiKey", () =>
+      setInstaApiKey(),
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudSignIn",
+      async () => {
+        const signedIn = await signInInstaCloud(outputChannel);
+        if (signedIn) {
+          provider.refresh();
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudSignOut",
+      async () => {
+        await signOutInstaCloud();
+        outputChannel.appendLine("[InstaCloud] Signed out.");
+        vscode.window.showInformationMessage("Signed out of InstaCloud.");
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudShowAccount",
+      async () => {
+        const account = await getInstaAccount();
+        if (!account) {
+          vscode.window.showInformationMessage(
+            "Not signed in to InstaCloud. Run “InstaCloud: Sign In”.",
+          );
+          return;
+        }
+        vscode.window.showInformationMessage(
+          `InstaCloud: ${account.email ?? "unknown user"}${
+            account.name ? ` (${account.name})` : ""
+          } — signed in via ${account.via ?? "session"}.`,
+        );
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudConnectService",
+      async (item: InstaCloudServiceItem) => {
+        if (!(item instanceof InstaCloudServiceItem)) {
+          return;
+        }
+        const alias = await connectInstaService(
+          item.project.id,
+          item.service.id,
+          item.service.name,
+          outputChannel,
+        );
+        if (alias) {
+          openRemoteWindow(alias, false, outputChannel);
+        }
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudStartService",
+      async (item: InstaCloudServiceItem) => {
+        if (!(item instanceof InstaCloudServiceItem)) {
+          return;
+        }
+        await startInstaService(
+          item.project.id,
+          item.service.id,
+          item.service.name,
+          outputChannel,
+        );
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudStopService",
+      async (item: InstaCloudServiceItem) => {
+        if (!(item instanceof InstaCloudServiceItem)) {
+          return;
+        }
+        await stopInstaService(
+          item.project.id,
+          item.service.id,
+          item.service.name,
+          outputChannel,
+        );
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudSuspendService",
+      async (item: InstaCloudServiceItem) => {
+        if (!(item instanceof InstaCloudServiceItem)) {
+          return;
+        }
+        await suspendInstaService(
+          item.project.id,
+          item.service.id,
+          item.service.name,
+          outputChannel,
+        );
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudRestartService",
+      async (item: InstaCloudServiceItem) => {
+        if (!(item instanceof InstaCloudServiceItem)) {
+          return;
+        }
+        await restartInstaService(
+          item.project.id,
+          item.service.id,
+          item.service.name,
+          outputChannel,
+        );
+        provider.refresh();
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudExecService",
+      async (item: InstaCloudServiceItem) => {
+        if (!(item instanceof InstaCloudServiceItem)) {
+          return;
+        }
+        const result = await promptAndExecInstaService(
+          item.project.id,
+          item.service.id,
+          item.service.name,
+          outputChannel,
+        );
+        if (!result) {
+          return;
+        }
+        outputChannel.appendLine(
+          `[InstaCloud] exit=${result.exitCode} service=${item.service.name}`,
+        );
+        if (result.stdout) {
+          outputChannel.appendLine(result.stdout);
+        }
+        if (result.stderr) {
+          outputChannel.appendLine(result.stderr);
+        }
+        if (result.truncated) {
+          outputChannel.appendLine(
+            "[InstaCloud] Output was truncated at the 1 MiB cap.",
+          );
+        }
+        outputChannel.show(true);
+        vscode.window.showInformationMessage(
+          `Command finished with exit code ${result.exitCode}.`,
+        );
+      },
+    ),
+    vscode.commands.registerCommand(
+      "remote-sandbox.instacloudShowSshTarget",
+      async (item: InstaCloudServiceItem) => {
+        if (!(item instanceof InstaCloudServiceItem)) {
+          return;
+        }
+        const target = await getInstaSshTarget(
+          item.project.id,
+          item.service.id,
+          outputChannel,
+        );
+        if (!target) {
+          vscode.window.showWarningMessage(
+            "No SSH target is available for this service (the shell lane may be off, the service stopped, or the region has no gateway).",
+          );
+          return;
+        }
+        const command = formatInstaSshCommand(target);
+        await vscode.env.clipboard.writeText(command);
+        outputChannel.appendLine(`[InstaCloud] SSH target: ${command}`);
+        vscode.window.showInformationMessage(
+          `SSH target copied: ${command}. The certificate must be minted with an interactive login (the API refuses API keys).`,
+        );
+      },
+    ),
+  );
 }
 
 function registerTensorlakeCommands(

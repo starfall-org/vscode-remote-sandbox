@@ -1,31 +1,63 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
+import * as https from "https";
 import * as os from "os";
 import * as path from "path";
+import * as fs from "fs";
+
+/* ------------------------------------------------------------------ */
+/* Constants                                                          */
+/* ------------------------------------------------------------------ */
 
 const FREESTYLE_API_BASE = "https://api.freestyle.sh";
-const FREESTYLE_SSH_HOST = "vm-ssh.freestyle.sh";
+/** The Freestyle public API lives under the /v5 prefix. */
+const FREESTYLE_API_PREFIX = "/v5";
+/** SSH proxy host used by every Freestyle VM. */
+const FREESTYLE_SSH_HOST = "beta-ssh.freestyle.sh";
+/** Key used to remember the identity that owns the SSH access tokens. */
+const FREESTYLE_IDENTITY_STATE_KEY = "freestyle.identityId";
 
 /* ------------------------------------------------------------------ */
 /* Types                                                              */
 /* ------------------------------------------------------------------ */
 
+/** Lifecycle states a Freestyle VM can be in. */
+export type FreestyleVmState =
+  | "starting"
+  | "running"
+  | "pausing"
+  | "paused"
+  | "stopped";
+
 export interface FreestyleVM {
   id: string;
-  state: "starting" | "running" | "suspending" | "suspended" | "stopped" | "lost" | "building";
-  name?: string;
-  cpu?: number;
-  memory?: number;
-  storage?: number;
+  state: FreestyleVmState;
+  slug?: string | null;
+  displayName?: string | null;
+  /** cpu is a count, memory and storage are in MiB. */
+  resources?: {
+    cpu: number;
+    memory: number;
+    storage: number;
+  };
   createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface FreestyleIdentity {
   id: string;
+  managed?: boolean;
 }
 
 export interface FreestyleToken {
+  id: string;
   token: string;
+}
+
+export interface FreestyleSnapshot {
+  id: string;
+  slug?: string | null;
+  displayName?: string | null;
+  sourceVmDisplayName?: string | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -70,9 +102,9 @@ export async function setFreestyleApiKey(): Promise<void> {
 }
 
 function promptApiKey(): void {
-  vscode.window
+  void vscode.window
     .showWarningMessage(
-      "No Freestyle API key found. Please provide one, set the remoteSandbox.freestyleApiKey setting, or set the FREESTYLE_API_KEY environment variable.",
+      "No Freestyle API key found. Set remoteSandbox.freestyleApiKey or the FREESTYLE_API_KEY environment variable.",
       "Set API Key",
     )
     .then((selection) => {
@@ -86,54 +118,96 @@ function promptApiKey(): void {
 /* HTTP client                                                        */
 /* ------------------------------------------------------------------ */
 
-async function freestyleRequest<T>(
+/**
+ * Performs a request against the Freestyle API.
+ *
+ * Uses node's `https` module rather than the global `fetch` so the
+ * extension also works on extension hosts running Node < 18.
+ */
+function freestyleRequest<T>(
   requestPath: string,
   apiKey: string,
   method = "GET",
   body?: unknown,
 ): Promise<T> {
-  // The Freestyle API expects a JSON request body (e.g. POST /start, /suspend)
-  // even when the caller has no payload. Default an absent body on POST/PUT/
-  // PATCH to `{}` so the server can parse it; otherwise it fails with
-  // "EOF while parsing a value" / 415 without Content-Type.
-  const wantsBody =
-    method === "POST" || method === "PUT" || method === "PATCH";
-  const requestBody =
-    body !== undefined ? JSON.stringify(body) : wantsBody ? "{}" : undefined;
-  const response = await fetch(`${FREESTYLE_API_BASE}${requestPath}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      ...(requestBody ? { "Content-Type": "application/json" } : {}),
-    },
-    body: requestBody,
-  });
-
-  const text = await response.text();
-  if (!response.ok) {
-    let message = text.trim() || response.statusText || "Unknown error";
+  return new Promise((resolve, reject) => {
+    let url: URL;
     try {
-      const err = JSON.parse(text) as { error?: { message?: string }; message?: string };
-      message = err.error?.message ?? err.message ?? message;
+      url = new URL(
+        `${FREESTYLE_API_BASE}${FREESTYLE_API_PREFIX}${requestPath}`,
+      );
     } catch {
-      // use response body as-is
+      reject(new Error(`Invalid Freestyle API path: ${requestPath}`));
+      return;
     }
-    throw new Error(
-      `Freestyle API request failed (${response.status}): ${message}`,
+
+    const requestBody = body === undefined ? undefined : JSON.stringify(body);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: "application/json",
+    };
+    if (requestBody !== undefined) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = String(Buffer.byteLength(requestBody));
+    }
+
+    const request = https.request(
+      url,
+      { method, headers },
+      (response) => {
+        let data = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk) => (data += chunk));
+        response.on("end", () => {
+          const status = response.statusCode ?? 0;
+          if (status >= 200 && status < 300) {
+            // Endpoints such as delete answer with 204 and no body.
+            if (!data.trim()) {
+              resolve(undefined as T);
+              return;
+            }
+            try {
+              resolve(JSON.parse(data) as T);
+            } catch {
+              reject(
+                new Error("Freestyle API returned an invalid JSON response."),
+              );
+            }
+            return;
+          }
+
+          let message =
+            data.trim() || response.statusMessage || "Unknown error";
+          try {
+            const error = JSON.parse(data) as {
+              code?: string;
+              message?: string;
+            };
+            message = error.message ?? message;
+            if (error.code) {
+              message = `${error.code}: ${message}`;
+            }
+          } catch {
+            // Use the response body as-is when it is not JSON.
+          }
+          reject(new Error(`Freestyle API request failed (${status}): ${message}`));
+        });
+      },
     );
-  }
-  if (!text.trim()) {
-    return undefined as T;
-  }
-  return JSON.parse(text) as T;
+
+    request.on("error", reject);
+    if (requestBody !== undefined) {
+      request.write(requestBody);
+    }
+    request.end();
+  });
 }
 
 /* ------------------------------------------------------------------ */
 /* List VMs                                                           */
 /* ------------------------------------------------------------------ */
 
-/** Lists Freestyle VMs visible to the configured API key. Returns []
- * when the API key is missing or the request fails. */
+/** Lists the Freestyle VMs visible to the configured API key. */
 export async function listFreestyleVms(
   outputChannel?: vscode.OutputChannel,
 ): Promise<FreestyleVM[]> {
@@ -142,8 +216,12 @@ export async function listFreestyleVms(
     return [];
   }
   try {
-    const response = await freestyleRequest<FreestyleVM[] | { vms: FreestyleVM[] }>("/v1/vms", apiKey);
-    const vms = Array.isArray(response) ? response : (response as { vms: FreestyleVM[] }).vms ?? [];
+    // GET /v5/vms answers with { vms: [...], totalCount, ... }.
+    const response = await freestyleRequest<{
+      vms?: FreestyleVM[];
+      items?: FreestyleVM[];
+    }>("/vms", apiKey);
+    const vms = response?.vms ?? response?.items ?? [];
     outputChannel?.appendLine(`[Freestyle] Listed ${vms.length} VM(s).`);
     return vms;
   } catch (error) {
@@ -160,14 +238,14 @@ export async function listFreestyleVms(
 /* ------------------------------------------------------------------ */
 
 interface CreateVMOptions {
-  cpu?: number;
-  memory?: number;
-  storage?: number;
+  displayName?: string;
+  slug?: string;
+  snapshotId?: string;
   idleTimeoutSeconds?: number;
+  allowOutboundInternet: boolean;
 }
 
-/** Creates a new Freestyle VM with optional configuration.
- * API: POST /v1/vms */
+/** Creates a new Freestyle VM. API: POST /v5/vms */
 export async function createFreestyleVm(
   outputChannel: vscode.OutputChannel,
 ): Promise<string | undefined> {
@@ -178,76 +256,32 @@ export async function createFreestyleVm(
   }
 
   try {
-    // Step 1: CPU cores
-    const cpuStr = await vscode.window.showInputBox({
-      prompt: "CPU cores (optional, powers of 2. Default: 4)",
-      placeHolder: "4",
-      ignoreFocusOut: true,
-      validateInput: (v) => {
-        if (!v) return null;
-        const n = parseInt(v, 10);
-        return isNaN(n) || n < 1 ? "Must be a positive integer" : null;
-      },
-    });
-    if (cpuStr === undefined) {
+    const options = await promptForVmOptions(apiKey, outputChannel);
+    if (!options) {
       return undefined;
     }
-    const cpu = cpuStr.trim() ? parseInt(cpuStr, 10) : undefined;
 
-    // Step 2: Memory (GB)
-    const memStr = await vscode.window.showInputBox({
-      prompt: "Memory in GiB (optional, powers of 2. Default: 8)",
-      placeHolder: "8",
-      ignoreFocusOut: true,
-      validateInput: (v) => {
-        if (!v) return null;
-        const n = parseInt(v, 10);
-        return isNaN(n) || n < 1 ? "Must be a positive integer" : null;
+    // A VM reaches nothing it has not been allowed to: the firewall block is
+    // required by the API. The SSH proxy is always allowed by the platform.
+    const body: Record<string, unknown> = {
+      firewall: {
+        rules: options.allowOutboundInternet
+          ? [{ action: "allow", source: {}, destination: { public: true } }]
+          : [],
       },
-    });
-    if (memStr === undefined) {
-      return undefined;
+    };
+    if (options.displayName) {
+      body.displayName = options.displayName;
     }
-    const memory = memStr.trim() ? parseInt(memStr, 10) : undefined;
-
-    // Step 3: Storage (GB)
-    const diskStr = await vscode.window.showInputBox({
-      prompt: "Storage in GiB (optional. Default: 20)",
-      placeHolder: "20",
-      ignoreFocusOut: true,
-      validateInput: (v) => {
-        if (!v) return null;
-        const n = parseInt(v, 10);
-        return isNaN(n) || n < 1 ? "Must be a positive integer" : null;
-      },
-    });
-    if (diskStr === undefined) {
-      return undefined;
+    if (options.slug) {
+      body.slug = options.slug;
     }
-    const storage = diskStr.trim() ? parseInt(diskStr, 10) : undefined;
-
-    // Step 4: Idle timeout
-    const idleStr = await vscode.window.showInputBox({
-      prompt: "Idle timeout in seconds (optional, empty = never)",
-      placeHolder: "600",
-      ignoreFocusOut: true,
-      validateInput: (v) => {
-        if (!v) return null;
-        const n = parseInt(v, 10);
-        return isNaN(n) || n < 0 ? "Must be a non-negative integer" : null;
-      },
-    });
-    if (idleStr === undefined) {
-      return undefined;
+    if (options.snapshotId) {
+      body.snapshotId = options.snapshotId;
     }
-    const idleTimeoutSeconds = idleStr.trim() ? parseInt(idleStr, 10) : undefined;
-
-    // Build request body
-    const body: Record<string, unknown> = {};
-    if (cpu !== undefined) body.cpu = cpu;
-    if (memory !== undefined) body.memory = memory;
-    if (storage !== undefined) body.storage = storage;
-    if (idleTimeoutSeconds !== undefined) body.idleTimeoutSeconds = idleTimeoutSeconds;
+    if (options.idleTimeoutSeconds !== undefined) {
+      body.idleTimeoutSeconds = options.idleTimeoutSeconds;
+    }
 
     const vm = await vscode.window.withProgress(
       {
@@ -255,30 +289,172 @@ export async function createFreestyleVm(
         title: "Creating Freestyle VM...",
         cancellable: false,
       },
-      () => freestyleRequest<FreestyleVM>("/v1/vms", apiKey, "POST", body),
+      () => freestyleRequest<FreestyleVM>("/vms", apiKey, "POST", body),
     );
 
     outputChannel.appendLine(
       `[Freestyle] Created VM: ${vm.id} (state: ${vm.state})`,
     );
     vscode.window.showInformationMessage(
-      `Freestyle VM created: ${vm.id} (${vm.state}). Connect via SSH from the tree view.`,
+      `Freestyle VM created: ${vm.id} (${vm.state}). Connect to it from the tree view.`,
     );
     return vm.id;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.appendLine(`[Freestyle] Error creating VM: ${message}`);
-    vscode.window.showErrorMessage(`Failed to create Freestyle VM: ${message}`);
+    vscode.window.showErrorMessage(
+      `Failed to create Freestyle VM: ${message}`,
+    );
     return undefined;
   }
 }
 
+/** Collects the options used to create a VM. Returns undefined when the
+ * user cancels any of the prompts. */
+async function promptForVmOptions(
+  apiKey: string,
+  outputChannel: vscode.OutputChannel,
+): Promise<CreateVMOptions | undefined> {
+  // Step 1: display name (optional)
+  const nameStr = await vscode.window.showInputBox({
+    prompt: "VM display name (optional)",
+    placeHolder: "my-workspace",
+    ignoreFocusOut: true,
+  });
+  if (nameStr === undefined) {
+    return undefined;
+  }
+  const displayName = nameStr.trim() || undefined;
+
+  // Step 2: slug (optional, unique in the account)
+  const slugStr = await vscode.window.showInputBox({
+    prompt: "VM slug (optional, unique in your account)",
+    placeHolder: "my-workspace",
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+      return /^[a-z0-9-]{1,63}$/.test(trimmed)
+        ? null
+        : "Use 1-63 characters: lowercase letters, digits and dashes.";
+    },
+  });
+  if (slugStr === undefined) {
+    return undefined;
+  }
+  const slug = slugStr.trim() || undefined;
+
+  // Step 3: base snapshot (optional, defines the VM size)
+  const snapshotId = await pickSnapshot(apiKey, outputChannel);
+  if (snapshotId === undefined) {
+    return undefined;
+  }
+
+  // Step 4: firewall
+  const firewallChoice = await vscode.window.showQuickPick(
+    [
+      {
+        label: "Allow outbound internet",
+        description: "Default — the VM can reach the public internet.",
+      },
+      {
+        label: "No extra rules",
+        description:
+          "The VM is only reachable through the Freestyle SSH proxy.",
+      },
+    ],
+    { placeHolder: "Choose the network rules for the new VM" },
+  );
+  if (!firewallChoice) {
+    return undefined;
+  }
+
+  // Step 5: idle timeout
+  const idleStr = await vscode.window.showInputBox({
+    prompt:
+      "Idle timeout in seconds (optional, leave empty to never pause for idleness)",
+    placeHolder: "600",
+    ignoreFocusOut: true,
+    validateInput: (v) => {
+      if (!v) {
+        return null;
+      }
+      const n = parseInt(v, 10);
+      return isNaN(n) || n < 0 ? "Must be a non-negative integer" : null;
+    },
+  });
+  if (idleStr === undefined) {
+    return undefined;
+  }
+  const idleTimeoutSeconds = idleStr.trim()
+    ? parseInt(idleStr, 10)
+    : undefined;
+
+  return {
+    displayName,
+    slug,
+    snapshotId,
+    idleTimeoutSeconds,
+    allowOutboundInternet: firewallChoice.label === "Allow outbound internet",
+  };
+}
+
+/** Lets the user pick a base snapshot. Returns undefined when the user
+ * cancels, or a snapshot id ("" means "platform default"). */
+async function pickSnapshot(
+  apiKey: string,
+  outputChannel: vscode.OutputChannel,
+): Promise<string | undefined> {
+  let snapshots: FreestyleSnapshot[] = [];
+  try {
+    const response = await freestyleRequest<{
+      snapshots?: FreestyleSnapshot[];
+      items?: FreestyleSnapshot[];
+    }>("/snapshots", apiKey);
+    snapshots = response?.snapshots ?? response?.items ?? [];
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    outputChannel.appendLine(
+      `[Freestyle] Could not list snapshots: ${message}`,
+    );
+  }
+
+  const items = [
+    {
+      label: "Platform default",
+      description: "The default Freestyle image",
+      id: "",
+    },
+    ...snapshots.map((snapshot) => ({
+      label:
+        snapshot.displayName ??
+        snapshot.sourceVmDisplayName ??
+        snapshot.slug ??
+        snapshot.id,
+      description: snapshot.id,
+      id: snapshot.id,
+    })),
+  ];
+
+  const picked = await vscode.window.showQuickPick(items, {
+    placeHolder: "Select the base snapshot for the new VM",
+    matchOnDescription: true,
+  });
+  if (!picked) {
+    return undefined;
+  }
+  return picked.id;
+}
+
 /* ------------------------------------------------------------------ */
-/* Suspend / Start / Delete                                           */
+/* Pause / Start / Delete                                             */
 /* ------------------------------------------------------------------ */
 
-/** Suspends a running Freestyle VM to disk. API: POST /v1/vms/{id}/suspend */
-export async function suspendFreestyleVm(
+/** Pauses a running Freestyle VM, keeping its memory in place.
+ * API: POST /v5/vms/{id}/pause */
+export async function pauseFreestyleVm(
   vmId: string,
   outputChannel: vscode.OutputChannel,
 ): Promise<void> {
@@ -292,23 +468,31 @@ export async function suspendFreestyleVm(
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.Notification,
-        title: `Suspending Freestyle VM ${vmId}...`,
+        title: `Pausing Freestyle VM ${vmId}...`,
         cancellable: false,
       },
-      () => freestyleRequest<void>(`/v1/vms/${encodeURIComponent(vmId)}/suspend`, apiKey, "POST"),
+      () =>
+        freestyleRequest<FreestyleVM>(
+          `/vms/${encodeURIComponent(vmId)}/pause`,
+          apiKey,
+          "POST",
+        ),
     );
-    outputChannel.appendLine(`[Freestyle] Suspended VM: ${vmId}`);
+    outputChannel.appendLine(`[Freestyle] Paused VM: ${vmId}`);
     vscode.window.showInformationMessage(
-      `Freestyle VM suspended: ${vmId}. Resume it to reconnect.`,
+      `Freestyle VM paused: ${vmId}. Resume it to reconnect.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.appendLine(`[Freestyle] Error: ${message}`);
-    vscode.window.showErrorMessage(`Failed to suspend Freestyle VM: ${message}`);
+    vscode.window.showErrorMessage(
+      `Failed to pause Freestyle VM: ${message}`,
+    );
   }
 }
 
-/** Starts a stopped Freestyle VM. API: POST /v1/vms/{id}/start */
+/** Starts a stopped VM, or resumes a paused one.
+ * API: POST /v5/vms/{id}/start */
 export async function startFreestyleVm(
   vmId: string,
   outputChannel: vscode.OutputChannel,
@@ -326,27 +510,25 @@ export async function startFreestyleVm(
         title: `Starting Freestyle VM ${vmId}...`,
         cancellable: false,
       },
-      () => freestyleRequest<void>(`/v1/vms/${encodeURIComponent(vmId)}/start`, apiKey, "POST"),
+      () =>
+        freestyleRequest<FreestyleVM>(
+          `/vms/${encodeURIComponent(vmId)}/start`,
+          apiKey,
+          "POST",
+        ),
     );
     outputChannel.appendLine(`[Freestyle] Started VM: ${vmId}`);
     vscode.window.showInformationMessage(`Freestyle VM started: ${vmId}.`);
-
-    // Refresh SSH config so "Connect in..." works right away
-    try {
-      await ensureFreestyleSshConfig(vmId, apiKey, outputChannel);
-    } catch (ensureErr) {
-      outputChannel.appendLine(
-        `[Freestyle] Warning: could not refresh SSH config: ${ensureErr}`,
-      );
-    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.appendLine(`[Freestyle] Error: ${message}`);
-    vscode.window.showErrorMessage(`Failed to start Freestyle VM: ${message}`);
+    vscode.window.showErrorMessage(
+      `Failed to start Freestyle VM: ${message}`,
+    );
   }
 }
 
-/** Deletes a Freestyle VM permanently. API: DELETE /v1/vms/{id} */
+/** Deletes a Freestyle VM permanently. API: DELETE /v5/vms/{id} */
 export async function deleteFreestyleVm(
   vmId: string,
   outputChannel: vscode.OutputChannel,
@@ -373,31 +555,192 @@ export async function deleteFreestyleVm(
         title: `Deleting Freestyle VM ${vmId}...`,
         cancellable: false,
       },
-      () => freestyleRequest<void>(`/v1/vms/${encodeURIComponent(vmId)}`, apiKey, "DELETE"),
+      () =>
+        freestyleRequest<void>(
+          `/vms/${encodeURIComponent(vmId)}`,
+          apiKey,
+          "DELETE",
+        ),
     );
     outputChannel.appendLine(`[Freestyle] Deleted VM: ${vmId}`);
     vscode.window.showInformationMessage(`Freestyle VM deleted: ${vmId}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.appendLine(`[Freestyle] Error: ${message}`);
-    vscode.window.showErrorMessage(`Failed to delete Freestyle VM: ${message}`);
+    vscode.window.showErrorMessage(
+      `Failed to delete Freestyle VM: ${message}`,
+    );
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Exec                                                               */
+/* ------------------------------------------------------------------ */
+
+/** Result of a command run inside a Freestyle VM. */
+export interface FreestyleExecResult {
+  statusCode?: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+/**
+ * Runs a shell command inside a running VM and waits for it to finish.
+ *
+ * The command is a single string that the guest's shell interprets, so
+ * pipes and redirections work as they would in a terminal.
+ */
+export async function execFreestyleVm(
+  vmIdOrSlug: string,
+  command: string,
+  timeoutMs = 60000,
+  outputChannel?: vscode.OutputChannel,
+): Promise<FreestyleExecResult | undefined> {
+  const apiKey = getFreestyleApiKey();
+  if (!apiKey) {
+    promptApiKey();
+    return undefined;
+  }
+
+  try {
+    return await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: `Freestyle: running command in ${vmIdOrSlug}...`,
+        cancellable: false,
+      },
+      () =>
+        freestyleRequest<FreestyleExecResult>(
+          `/vms/${encodeURIComponent(vmIdOrSlug)}/exec-await`,
+          apiKey,
+          "POST",
+          { command, timeoutMs },
+        ),
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    outputChannel?.appendLine(
+      `[Freestyle] Error running command in ${vmIdOrSlug}: ${message}`,
+    );
+    vscode.window.showErrorMessage(`Freestyle command failed: ${message}`);
+    return undefined;
+  }
+}
+
+/**
+ * Asks the user for a shell command and runs it in the VM.
+ */
+export async function promptAndExecFreestyleVm(
+  vmIdOrSlug: string,
+  vmName: string,
+  outputChannel: vscode.OutputChannel,
+): Promise<FreestyleExecResult | undefined> {
+  const input = await vscode.window.showInputBox({
+    prompt: `Command to run in Freestyle VM ${vmName}`,
+    placeHolder: "ls -la /home",
+    ignoreFocusOut: true,
+  });
+  if (input === undefined) {
+    return undefined;
+  }
+  const command = input.trim();
+  if (!command) {
+    return undefined;
+  }
+
+  return execFreestyleVm(vmIdOrSlug, command, 60000, outputChannel);
 }
 
 /* ------------------------------------------------------------------ */
 /* SSH / Connect                                                      */
 /* ------------------------------------------------------------------ */
 
-/** Host alias used for SSH config. */
+/** Host alias used in the SSH config. */
 export function freestyleHostAlias(vmId: string): string {
   return `FS_${vmId}`;
 }
 
 /**
+ * Returns the identity used to mint SSH access tokens, creating one when
+ * needed. The identity id is remembered in the extension global state so
+ * repeated connections do not pile up identities.
+ */
+async function ensureFreestyleIdentity(
+  context: vscode.ExtensionContext | undefined,
+  apiKey: string,
+  outputChannel: vscode.OutputChannel,
+): Promise<FreestyleIdentity> {
+  const storedId = context?.globalState.get<string>(
+    FREESTYLE_IDENTITY_STATE_KEY,
+  );
+  if (storedId) {
+    try {
+      const identity = await freestyleRequest<FreestyleIdentity>(
+        `/identities/${encodeURIComponent(storedId)}`,
+        apiKey,
+      );
+      if (identity?.id) {
+        return identity;
+      }
+    } catch {
+      // The identity is gone (or the API is unhappy) — mint a new one below.
+      outputChannel.appendLine(
+        `[Freestyle] Stored identity ${storedId} is unusable; creating a new one.`,
+      );
+    }
+  }
+
+  outputChannel.appendLine("[Freestyle] Creating SSH identity...");
+  const identity = await freestyleRequest<FreestyleIdentity>(
+    "/identities",
+    apiKey,
+    "POST",
+    {},
+  );
+  if (context) {
+    await context.globalState.update(
+      FREESTYLE_IDENTITY_STATE_KEY,
+      identity.id,
+    );
+  }
+  return identity;
+}
+
+/**
+ * Grants the identity access to the VM.
+ * API: POST /v5/identities/{id}/permissions/vm
+ */
+async function grantFreestyleVmAccess(
+  identityId: string,
+  vmId: string,
+  apiKey: string,
+  outputChannel: vscode.OutputChannel,
+): Promise<void> {
+  outputChannel.appendLine("[Freestyle] Granting VM permission...");
+  try {
+    await freestyleRequest<void>(
+      `/identities/${encodeURIComponent(identityId)}/permissions/vm`,
+      apiKey,
+      "POST",
+      { vmId },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A grant that already exists is not a problem — the VM stays reachable.
+    if (/already|CONFLICT|409/i.test(message)) {
+      outputChannel.appendLine("[Freestyle] VM permission already granted.");
+      return;
+    }
+    throw error;
+  }
+}
+
+/**
  * Creates SSH access for a Freestyle VM by:
- * 1. Creating an identity & granting VM permission
- * 2. Creating an access token
- * 3. Writing ~/.ssh/freestyle.conf with token embedded in User field
+ * 1. Reusing (or creating) an identity
+ * 2. Granting that identity access to the VM
+ * 3. Minting an access token
+ * 4. Writing ~/.ssh/freestyle.conf with the token embedded in the User field
  *
  * Returns the SSH host alias on success, undefined on failure.
  */
@@ -405,40 +748,33 @@ async function ensureFreestyleSshConfig(
   vmId: string,
   apiKey: string,
   outputChannel: vscode.OutputChannel,
+  context?: vscode.ExtensionContext,
 ): Promise<string | undefined> {
   const alias = freestyleHostAlias(vmId);
-  const configPath = path.join(os.homedir(), ".ssh", "freestyle.conf");
   const sshDir = path.join(os.homedir(), ".ssh");
+  const configPath = path.join(sshDir, "freestyle.conf");
 
   try {
-    // Step 1: Create identity
-    outputChannel.appendLine("[Freestyle] Creating SSH identity...");
-    const identity = await freestyleRequest<FreestyleIdentity>(
-      "/identity/v1/identities",
+    // Step 1: identity
+    const identity = await ensureFreestyleIdentity(
+      context,
       apiKey,
-      "POST",
-      {},
+      outputChannel,
     );
 
-    // Step 2: Grant VM permission
-    outputChannel.appendLine("[Freestyle] Granting VM permission...");
-    await freestyleRequest<void>(
-      `/identity/v1/identities/${encodeURIComponent(identity.id)}/permissions/vm/${encodeURIComponent(vmId)}`,
-      apiKey,
-      "POST",
-      {},
-    );
+    // Step 2: grant VM permission
+    await grantFreestyleVmAccess(identity.id, vmId, apiKey, outputChannel);
 
-    // Step 3: Create token
+    // Step 3: create token
     outputChannel.appendLine("[Freestyle] Creating access token...");
     const tokenResult = await freestyleRequest<FreestyleToken>(
-      `/identity/v1/identities/${encodeURIComponent(identity.id)}/tokens`,
+      `/identities/${encodeURIComponent(identity.id)}/tokens`,
       apiKey,
       "POST",
       {},
     );
 
-    // Step 4: Write SSH config (token embedded in User field)
+    // Step 4: write SSH config (token embedded in the User field)
     fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
 
     const configContent = [
@@ -459,6 +795,9 @@ async function ensureFreestyleSshConfig(
     outputChannel.appendLine(
       `[Freestyle] SSH config written to ${configPath} (Host: ${alias})`,
     );
+    outputChannel.appendLine(
+      `[Freestyle] Ensure ~/.ssh/config contains: Include "${configPath}"`,
+    );
     return alias;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -468,12 +807,13 @@ async function ensureFreestyleSshConfig(
 }
 
 /**
- * Connects to a Freestyle VM by creating SSH credentials and writing the
+ * Connects to a Freestyle VM by starting it when needed and writing the
  * SSH config. Returns the SSH host alias on success, undefined on failure.
  */
 export async function connectFreestyleVm(
   vm: FreestyleVM,
   outputChannel: vscode.OutputChannel,
+  context?: vscode.ExtensionContext,
 ): Promise<string | undefined> {
   const apiKey = getFreestyleApiKey();
   if (!apiKey) {
@@ -485,9 +825,11 @@ export async function connectFreestyleVm(
   try {
     outputChannel.show(true);
 
-    // Auto-start if stopped or suspended
-    if (vm.state === "stopped" || vm.state === "suspended") {
-      outputChannel.appendLine(`[Freestyle] VM ${vm.id} is ${vm.state} — starting...`);
+    // Auto-start if stopped or paused
+    if (vm.state === "stopped" || vm.state === "paused") {
+      outputChannel.appendLine(
+        `[Freestyle] VM ${vm.id} is ${vm.state} — starting...`,
+      );
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
@@ -495,19 +837,26 @@ export async function connectFreestyleVm(
           cancellable: false,
         },
         () =>
-          freestyleRequest<void>(
-            `/v1/vms/${encodeURIComponent(vm.id)}/start`,
+          freestyleRequest<FreestyleVM>(
+            `/vms/${encodeURIComponent(vm.id)}/start`,
             apiKey,
             "POST",
           ),
       );
     }
 
-    return await ensureFreestyleSshConfig(vm.id, apiKey, outputChannel);
+    return await ensureFreestyleSshConfig(
+      vm.id,
+      apiKey,
+      outputChannel,
+      context,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.appendLine(`[Freestyle] Error: ${message}`);
-    vscode.window.showErrorMessage(`Failed to connect to Freestyle VM: ${message}`);
+    vscode.window.showErrorMessage(
+      `Failed to connect to Freestyle VM: ${message}`,
+    );
     return undefined;
   }
 }
