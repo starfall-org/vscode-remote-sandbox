@@ -6,7 +6,9 @@ import { execFile } from "node:child_process";
 import { getInstaCredential, instaApiRequest } from "./instacloudAuth";
 import {
   ensureSshConfigInclude,
+  removeSshConfigBlocks,
   sshDirectory,
+  sshPath,
   upsertSshConfigBlock,
 } from "./sshConfig";
 
@@ -35,9 +37,20 @@ export interface InstaSshPending {
 /* Host alias                                                         */
 /* ------------------------------------------------------------------ */
 
-/** Host alias used in the SSH config. */
-export function instaHostAlias(serviceId: string): string {
-  return `INSTA_${serviceId}`;
+/**
+ * Host alias used in the SSH config.
+ *
+ * The alias is the service name, because that is what the user recognizes
+ * in the tree and in the Remote-SSH host picker. SSH host patterns cannot
+ * contain spaces or most punctuation, so the name is sanitized; the service
+ * id is only used as a fallback when nothing usable is left.
+ */
+export function instaHostAlias(serviceName: string, serviceId: string): string {
+  const sanitized = serviceName
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return sanitized || `INSTA_${serviceId}`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -115,14 +128,17 @@ async function ensureSshKeyPair(
  */
 function trustCertificateAuthority(
   host: string,
+  port: number,
   caPublicKey: string,
   outputChannel: vscode.OutputChannel,
 ): void {
   const sshDir = sshDirectory();
   const knownHosts = path.join(sshDir, "known_hosts");
+  // known_hosts matches non-default ports in the bracketed [host]:port form.
+  const hostKey = port && port !== 22 ? `[${host}]:${port}` : host;
   const entry = caPublicKey.startsWith("@cert-authority")
     ? caPublicKey
-    : `@cert-authority ${host} ${caPublicKey}`;
+    : `@cert-authority ${hostKey} ${caPublicKey}`;
 
   let current = "";
   if (fs.existsSync(knownHosts)) {
@@ -136,7 +152,7 @@ function trustCertificateAuthority(
   const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
   fs.appendFileSync(knownHosts, `${separator}${entry}\n`, { mode: 0o600 });
   outputChannel.appendLine(
-    `[InstaCloud] Trusted the InstaCloud certificate authority for ${host}.`,
+    `[InstaCloud] Trusted the InstaCloud certificate authority for ${hostKey}.`,
   );
 }
 
@@ -221,7 +237,7 @@ export async function connectInstaService(
       cert = await instaApiRequest<InstaSshCertificate>(
         `/projects/${encodeURIComponent(projectId)}/services/${encodeURIComponent(serviceId)}/ssh-cert`,
         "POST",
-        { publicKey, ttlSec: 3600 },
+        { publicKey, ttlSec: 21600 },
         credential.token,
       );
     } catch (error) {
@@ -243,26 +259,42 @@ export async function connectInstaService(
     const sshDir = sshDirectory();
     fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
 
-    const alias = instaHostAlias(serviceId);
+    const alias = instaHostAlias(serviceName, serviceId);
     const certPath = path.join(sshDir, `instacloud_${serviceId}.cert`);
     fs.writeFileSync(certPath, `${cert.certificate}\n`, { mode: 0o600 });
 
     if (cert.caPublicKey) {
-      trustCertificateAuthority(cert.host, cert.caPublicKey, outputChannel);
+      trustCertificateAuthority(
+        cert.host,
+        cert.port,
+        cert.caPublicKey,
+        outputChannel,
+      );
     }
 
     const configPath = path.join(sshDir, "instacloud.conf");
-    upsertSshConfigBlock(configPath, `INSTACLOUD SERVICE ${alias}`, [
+
+    // Drop blocks written by an older version that keyed the host on the
+    // service id, they would keep a stale Host entry around.
+    removeSshConfigBlocks(configPath, (marker) =>
+      /^INSTACLOUD SERVICE INSTA_/.test(marker),
+    );
+
+    upsertSshConfigBlock(configPath, `INSTACLOUD SERVICE ${serviceId}`, [
       `Host ${alias}`,
       `    HostName ${cert.host}`,
       `    User ${cert.username}`,
       `    Port ${cert.port}`,
-      `    IdentityFile ${keys.privateKeyPath}`,
-      `    CertificateFile ${certPath}`,
+      `    IdentityFile ${sshPath(keys.privateKeyPath)}`,
+      `    CertificateFile ${sshPath(certPath)}`,
+      `    IdentitiesOnly yes`,
       `    StrictHostKeyChecking ${
         cert.caPublicKey ? "yes" : "accept-new"
       }`,
-      `    UserKnownHostsFile ${path.join(sshDir, "known_hosts")}`,
+      `    PasswordAuthentication no`,
+      `    PreferredAuthentications publickey`,
+      `    RemoteCommand none`,
+      `    UserKnownHostsFile ${sshPath(path.join(sshDir, "known_hosts"))}`,
       `    ServerAliveInterval 60`,
       `    ServerAliveCountMax 3`,
     ]);

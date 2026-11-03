@@ -5,6 +5,7 @@ import * as path from "path";
 import * as fs from "fs";
 import {
   ensureSshConfigInclude,
+  nullDevice,
   sshDirectory,
   upsertSshConfigBlock,
 } from "./sshConfig";
@@ -787,7 +788,8 @@ async function ensureFreestyleSshConfig(
       `    HostName ${FREESTYLE_SSH_HOST}`,
       `    User ${vmId}+root:${tokenResult.token}`,
       `    StrictHostKeyChecking no`,
-      `    UserKnownHostsFile /dev/null`,
+      `    UserKnownHostsFile ${nullDevice()}`,
+      `    RemoteCommand none`,
       `    ServerAliveInterval 60`,
       `    ServerAliveCountMax 3`,
     ]);
