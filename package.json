@@ -2,7 +2,7 @@
   "name": "remote-sandbox",
   "displayName": "Remote Sandbox",
   "description": "Manage Freestyle, InstaCloud, and Tensorlake sandboxes and connect to them from VS Code.",
-  "version": "3.1.2",
+  "version": "3.1.3",
   "repository": {
     "type": "git",
     "url": "https://github.com/starfall-org/remote-sandbox-vscode.git"
