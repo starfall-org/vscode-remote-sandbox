@@ -4,10 +4,11 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import {
-  ensureSshConfigInclude,
   nullDevice,
+  promptSshConfigInclude,
+  readSshConfigBlocks,
+  rewriteSshConfigFile,
   sshDirectory,
-  upsertSshConfigBlock,
 } from "./sshConfig";
 
 /* ------------------------------------------------------------------ */
@@ -746,7 +747,10 @@ async function grantFreestyleVmAccess(
  * 1. Reusing (or creating) an identity
  * 2. Granting that identity access to the VM
  * 3. Minting an access token
- * 4. Writing ~/.ssh/freestyle.conf with the token embedded in the User field
+ * 4. Rewriting ~/.ssh/freestyle.conf with the token embedded in the User field
+ *
+ * The extension never modifies ~/.ssh/config on its own, it only offers to
+ * add the Include directive for the freshly written file.
  *
  * Returns the SSH host alias on success, undefined on failure.
  */
@@ -780,26 +784,40 @@ async function ensureFreestyleSshConfig(
       {},
     );
 
-    // Step 4: write SSH config (token embedded in the User field)
+    // Step 4: rewrite the SSH config (token embedded in the User field)
     fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
 
-    upsertSshConfigBlock(configPath, `FREESTYLE VM ${alias}`, [
-      `Host ${alias}`,
-      `    HostName ${FREESTYLE_SSH_HOST}`,
-      `    User ${vmId}+root:${tokenResult.token}`,
-      `    StrictHostKeyChecking no`,
-      `    UserKnownHostsFile ${nullDevice()}`,
-      `    RemoteCommand none`,
-      `    ServerAliveInterval 60`,
-      `    ServerAliveCountMax 3`,
+    // The file is regenerated as a whole instead of being edited in place:
+    // the entry of this VM is replaced, the entries of the other Freestyle
+    // VMs are kept.
+    const marker = `FREESTYLE VM ${alias}`;
+    const keptBlocks = readSshConfigBlocks(configPath).filter(
+      (block) => block.marker !== marker,
+    );
+    rewriteSshConfigFile(configPath, [
+      ...keptBlocks,
+      {
+        marker,
+        lines: [
+          `Host ${alias}`,
+          `    HostName ${FREESTYLE_SSH_HOST}`,
+          `    User ${vmId}+root:${tokenResult.token}`,
+          `    StrictHostKeyChecking no`,
+          `    UserKnownHostsFile ${nullDevice()}`,
+          `    RemoteCommand none`,
+          `    ServerAliveInterval 60`,
+          `    ServerAliveCountMax 3`,
+        ],
+      },
     ]);
 
     // Remote-SSH resolves the alias through ~/.ssh/config, so the
-    // Include directive has to be there for the connection to work.
-    ensureSshConfigInclude(configPath, outputChannel);
+    // Include directive has to be there for the connection to work. The
+    // file is only touched after the user confirms it.
+    await promptSshConfigInclude(configPath, outputChannel);
 
     outputChannel.appendLine(
-      `[Freestyle] SSH config written to ${configPath} (Host: ${alias})`,
+      `[Freestyle] Rewrote ${configPath} (Host: ${alias}).`,
     );
     return alias;
   } catch (error) {

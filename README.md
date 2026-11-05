@@ -100,7 +100,7 @@ The exec endpoint takes an argv array and invokes no shell, so the extension wra
 3. writes the certificate to `~/.ssh/instacloud_<service>.cert`,
 4. adds the certificate authority to `~/.ssh/known_hosts`,
 5. writes the `INSTA_<service-id>` host into `~/.ssh/instacloud.conf`,
-6. makes sure `~/.ssh/config` includes that file,
+6. offers to add the matching `Include` directive to `~/.ssh/config` (only when you confirm it),
 7. opens Remote-SSH on that host.
 
 The certificate is short-lived (one hour by default) and the SSH proxy is regenerated on every connect, so re-connect after it expires.
@@ -112,11 +112,20 @@ Freestyle and InstaCloud manage their own SSH config files under `~/.ssh` and on
 - **Freestyle** (`~/.ssh/freestyle.conf`) — credentials are generated when connecting or starting a VM.
 - **InstaCloud** (`~/.ssh/instacloud.conf`) — the host, port and certificate of the service you connected to.
 
-Both files are managed per host, so connecting to a second VM or service keeps the first one. The extension also adds the matching `Include` directive to `~/.ssh/config` for you, so Remote-SSH can resolve the host alias without any manual editing. The config is (re)written automatically as part of **Connect in Current Window**, **Connect in New Window**, and **Start** — whenever a check shows the stored config is outdated. The standalone "Get SSH Info" / "Save SSH Config" commands were removed.
+Both files are managed per host, so connecting to a second VM or service keeps the first one. `~/.ssh/freestyle.conf` is rewritten as a whole file on every connect (the entry of the VM being connected is replaced, the entries of the other Freestyle VMs are kept). The config is (re)written automatically as part of **Connect in Current Window**, **Connect in New Window**, and **Start** — whenever a check shows the stored config is outdated. The standalone "Get SSH Info" / "Save SSH Config" commands were removed.
 
 Tensorlake does not use SSH. It uses the `tensorlake:` virtual filesystem and an API-backed terminal/PTY instead.
 
-Freestyle and InstaCloud write their own `.conf` files and add the `Include` line to `~/.ssh/config` themselves.
+### `~/.ssh/config` is never modified automatically
+
+Freestyle and InstaCloud write their own `.conf` files and never touch your `~/.ssh/config` on their own. Remote-SSH resolves a host alias through `~/.ssh/config`, so the file has to contain the matching `Include` directive:
+
+````text
+Include "/home/you/.ssh/freestyle.conf"
+Include "/home/you/.ssh/instacloud.conf"
+````
+
+The extension prints the required line to the output channel and asks whether it may add it. If you decline, add the line manually — otherwise the host alias is unknown to SSH and the connection fails.
 
 ## Configuration
 
@@ -139,7 +148,7 @@ The InstaCloud API base URL defaults to `https://api.instacloud.com` and can be 
 ## Troubleshooting
 
 - Check the Remote Sandbox output channel for operation details and errors.
-- Verify the generated configuration file is included by `~/.ssh/config` (Freestyle writes its own `.conf` file and prints the `Include` line to the output channel).
+- Verify the generated configuration file is included by `~/.ssh/config` (the extension prints the `Include` line to the output channel and can add it for you when you confirm the prompt).
 - Confirm the required API keys are available and that the **Remote - SSH** extension is installed for Freestyle connections.
 
 ## License

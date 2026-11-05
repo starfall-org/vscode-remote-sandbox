@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { getInstaCredential, instaApiRequest } from "./instacloudAuth";
 import {
-  ensureSshConfigInclude,
+  promptSshConfigInclude,
   removeSshConfigBlocks,
   sshDirectory,
   sshPath,
@@ -300,8 +300,9 @@ export async function connectInstaService(
     ]);
 
     // Remote-SSH resolves the alias through ~/.ssh/config, so the
-    // Include directive has to be there for the connection to work.
-    ensureSshConfigInclude(configPath, outputChannel);
+    // Include directive has to be there for the connection to work. The
+    // file is only touched after the user confirms it.
+    await promptSshConfigInclude(configPath, outputChannel);
 
     outputChannel.appendLine(
       `[InstaCloud] SSH config written to ${configPath} (Host: ${alias})`,

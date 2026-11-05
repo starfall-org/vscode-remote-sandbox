@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type * as vscode from "vscode";
+import * as vscode from "vscode";
 
 /* ------------------------------------------------------------------ */
 /* Paths                                                              */
@@ -80,6 +80,39 @@ export function upsertSshConfigBlock(
 
   const separator = current.length === 0 || current.endsWith("\n") ? "" : "\n";
   fs.appendFileSync(configPath, `${separator}${block}`, { mode: 0o600 });
+}
+
+/**
+ * Writes an SSH config file from scratch.
+ *
+ * In contrast to {@link upsertSshConfigBlock} the file is not edited in
+ * place: it is regenerated completely from the given blocks. The result is
+ * therefore deterministic and never contains leftovers of an earlier
+ * version of the configuration.
+ */
+export function rewriteSshConfigFile(
+  configPath: string,
+  blocks: { marker: string; lines: string[] }[],
+): void {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
+
+  const content = blocks
+    .map((entry) =>
+      [
+        `# BEGIN ${entry.marker}`,
+        ...entry.lines,
+        `# END ${entry.marker}`,
+        "",
+      ].join("\n"),
+    )
+    .join("\n");
+
+  fs.writeFileSync(configPath, content, { mode: 0o600 });
+  try {
+    fs.chmodSync(configPath, 0o600);
+  } catch {
+    // Best effort only — the file has already been written.
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -215,16 +248,31 @@ function normalizeIncludeTarget(value: string): string {
 }
 
 /**
- * Makes sure `~/.ssh/config` includes the given file.
- *
- * Remote-SSH resolves a host alias through `~/.ssh/config`, so without the
- * `Include` directive the alias would be unknown and the connection would
- * fail. The directive is added once and never duplicated.
+ * Checks whether `~/.ssh/config` already includes the given file.
  */
-export function ensureSshConfigInclude(
-  includedPath: string,
-  outputChannel?: vscode.OutputChannel,
-): void {
+export function hasSshConfigInclude(includedPath: string): boolean {
+  const configPath = sshConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return false;
+  }
+  const current = fs.readFileSync(configPath, "utf8");
+  const target = normalizeIncludeTarget(includedPath);
+  return current.split(/\r?\n/).some((line) => {
+    const trimmed = line.trim();
+    if (!/^include\s+/i.test(trimmed)) {
+      return false;
+    }
+    const value = trimmed.replace(/^include\s+/i, "");
+    return normalizeIncludeTarget(value) === target;
+  });
+}
+
+/**
+ * Adds the `Include` directive for the given file to `~/.ssh/config`.
+ *
+ * The directive is added once and never duplicated.
+ */
+export function writeSshConfigInclude(includedPath: string): void {
   const configPath = sshConfigPath();
   fs.mkdirSync(path.dirname(configPath), { recursive: true, mode: 0o700 });
 
@@ -266,6 +314,49 @@ export function ensureSshConfigInclude(
   fs.writeFileSync(configPath, `${merged.replace(/\n{3,}/g, "\n\n").trimEnd()}\n`, {
     mode: 0o600,
   });
+}
 
+/**
+ * Reports the `Include` directive that `~/.ssh/config` needs.
+ *
+ * Remote-SSH resolves a host alias through `~/.ssh/config`, so without the
+ * `Include` directive the alias would be unknown and the connection would
+ * fail.
+ *
+ * The extension never edits `~/.ssh/config` on its own — the directive is
+ * only written after the user explicitly confirms it in the prompt.
+ */
+export async function promptSshConfigInclude(
+  includedPath: string,
+  outputChannel?: vscode.OutputChannel,
+): Promise<void> {
+  const directive = `Include ${sshPath(includedPath)}`;
+
+  outputChannel?.appendLine(
+    `[SSH] ~/.ssh/config is not modified automatically. It has to include ${includedPath}:`,
+  );
+  outputChannel?.appendLine(`[SSH]   ${directive}`);
+
+  if (hasSshConfigInclude(includedPath)) {
+    outputChannel?.appendLine(
+      "[SSH] ~/.ssh/config already contains the Include directive.",
+    );
+    return;
+  }
+
+  const choice = await vscode.window.showWarningMessage(
+    `~/.ssh/config has to include ${includedPath} for the host alias to resolve.\n\n${directive}`,
+    "Add to ~/.ssh/config",
+    "Not now",
+  );
+
+  if (choice !== "Add to ~/.ssh/config") {
+    outputChannel?.appendLine(
+      "[SSH] Skipped. Add the Include line to ~/.ssh/config manually.",
+    );
+    return;
+  }
+
+  writeSshConfigInclude(includedPath);
   outputChannel?.appendLine(`[SSH] ~/.ssh/config now includes ${includedPath}.`);
 }
